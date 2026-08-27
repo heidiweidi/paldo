@@ -7,17 +7,23 @@ const HOSTS = [
   "https://data-api.binance.vision",
 ];
 
+const VALID_INTERVALS = ["1h", "4h", "1d"];
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const symbol = (searchParams.get("symbol") || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  const interval = searchParams.get("interval") === "1h" ? "1h" : "4h";
+  const reqInterval = searchParams.get("interval");
+  const interval = VALID_INTERVALS.includes(reqInterval) ? reqInterval : "4h";
+  // Daily (EMA200 bias) and structure-mode entry timeframes need more warmup bars than the
+  // default trend screener does; allow the caller to request more, capped at Binance's max.
+  const limit = Math.min(1000, Math.max(50, parseInt(searchParams.get("limit"), 10) || 200));
   if (!symbol) return json({ error: "symbol required" }, 400);
 
   let lastErr = "unknown";
   for (const host of HOSTS) {
     try {
       const r = await fetch(
-        `${host}/api/v3/klines?symbol=${symbol}USDT&interval=${interval}&limit=200`,
+        `${host}/api/v3/klines?symbol=${symbol}USDT&interval=${interval}&limit=${limit}`,
         { cf: { cacheTtl: 60, cacheEverything: true } }
       );
       if (!r.ok) { lastErr = "http " + r.status; continue; }

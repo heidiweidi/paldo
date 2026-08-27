@@ -25,7 +25,11 @@ export default function TradingViewChart({ symbol, interval = "240", height = 52
         hide_side_toolbar: false,
         allow_symbol_change: true,
         withdateranges: true,
-        studies: ["MAExp@tv-basicstudies", "RSI@tv-basicstudies"],
+        studies: [
+          { id: "MAExp@tv-basicstudies", inputs: { length: 50 } },
+          { id: "MAExp@tv-basicstudies", inputs: { length: 200 } },
+          { id: "RSI@tv-basicstudies", inputs: { length: 30 } },
+        ],
         backgroundColor: "rgba(18, 28, 46, 1)",
         gridColor: "rgba(34, 48, 74, 0.6)",
       });
