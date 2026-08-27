@@ -6,6 +6,7 @@ import { FOREX } from "@/lib/universe";
 import { analyze, analyzeLiquiditySweep, to4h } from "@/lib/indicators";
 import { tvSymbol, TV_INTERVAL, tvUrl } from "@/lib/symbols";
 import TradingViewChart from "@/components/TradingViewChart";
+import PositionChart from "@/components/PositionChart";
 
 const PLAIN_STUDIES = []; // stable reference — avoids re-mounting the chart every render
 
@@ -70,22 +71,24 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
   const [tf, setTf] = useState(tf0 === "1h" ? "1h" : "4h");
   const [a, setA] = useState(null);
   const [s, setS] = useState(null);
+  const [bars, setBars] = useState(null);
   const [state, setState] = useState("loading"); // loading | ok | error
 
   const loadTrend = useCallback(async () => {
     setState("loading");
     try {
-      let bars;
+      let bars0;
       if (mkt === "crypto") {
-        ({ bars } = await jget(`/api/klines?symbol=${symbol}&interval=${tf}`));
+        ({ bars: bars0 } = await jget(`/api/klines?symbol=${symbol}&interval=${tf}`));
       } else {
         const f = FOREX.find((x) => x.s === symbol);
-        ({ bars } = await jget(`/api/forex?symbol=${encodeURIComponent(f ? f.y : symbol)}`));
-        if (tf === "4h") bars = to4h(bars);
+        ({ bars: bars0 } = await jget(`/api/forex?symbol=${encodeURIComponent(f ? f.y : symbol)}`));
+        if (tf === "4h") bars0 = to4h(bars0);
       }
-      const res = analyze(symbol, mkt, bars);
+      const res = analyze(symbol, mkt, bars0);
       if (res) res.vol = res.atrPct >= (mkt === "crypto" ? 3 : 0.5) ? "High" : res.atrPct >= (mkt === "crypto" ? 1.5 : 0.25) ? "Medium" : "Low";
       setA(res);
+      setBars(bars0);
       setState(res ? "ok" : "error");
     } catch {
       setState("error");
@@ -95,17 +98,18 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
   const loadStructure = useCallback(async () => {
     setState("loading");
     try {
-      let bars;
+      let bars0;
       if (mkt === "crypto") {
-        ({ bars } = await jget(`/api/klines?symbol=${symbol}&interval=${tf}&limit=300`));
+        ({ bars: bars0 } = await jget(`/api/klines?symbol=${symbol}&interval=${tf}&limit=300`));
       } else {
         const f = FOREX.find((x) => x.s === symbol);
         const ysym = encodeURIComponent(f ? f.y : symbol);
-        ({ bars } = await jget(`/api/forex?symbol=${ysym}&range=3mo`));
-        if (tf === "4h") bars = to4h(bars);
+        ({ bars: bars0 } = await jget(`/api/forex?symbol=${ysym}&range=3mo`));
+        if (tf === "4h") bars0 = to4h(bars0);
       }
-      const res = analyzeLiquiditySweep(symbol, mkt, bars);
+      const res = analyzeLiquiditySweep(symbol, mkt, bars0);
       setS(res);
+      setBars(bars0);
       setState(res ? "ok" : "error");
     } catch {
       setState("error");
@@ -130,6 +134,13 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
   const biasLabel = s && s.bias === "long" ? "▲ BULLISH REVERSAL" : s && s.bias === "short" ? "▼ BEARISH REVERSAL" : "NO REVERSAL IN PROGRESS";
 
   const data = strategy === "structure" ? s : a;
+
+  // Whichever mode is active, only surface a position to draw once there's an
+  // actual computed entry (Trend/ADX: signal !== 0; Structure Setup: setupReady).
+  const hasPosition = strategy === "structure" ? !!(s && s.setupReady) : !!(a && a.signal !== 0);
+  const positionEntry = hasPosition ? data.entry : null;
+  const positionStop = hasPosition ? data.stop : null;
+  const positionTarget = hasPosition ? data.target : null;
 
   return (
     <div className="wrap">
@@ -200,8 +211,20 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
             )}
           </div>
 
-          <div className="chart-panel">
-            <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[tf]} studies={strategy === "structure" ? PLAIN_STUDIES : undefined} />
+          <div className="chart-grid">
+            <div className="chart-panel">
+              <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[tf]} studies={strategy === "structure" ? PLAIN_STUDIES : undefined} />
+            </div>
+            {positionEntry != null ? (
+              <div className="chart-panel">
+                <div className="idea-h">
+                  Position — entry <span className="warn-txt">{fmt(positionEntry, symbol)}</span>
+                  {" · "}stop <span className="short-txt">{fmt(positionStop, symbol)}</span>
+                  {" · "}target <span className="long-txt">{fmt(positionTarget, symbol)}</span>
+                </div>
+                <PositionChart bars={bars} entry={positionEntry} stop={positionStop} target={positionTarget} />
+              </div>
+            ) : null}
           </div>
         </>
       ) : null}
