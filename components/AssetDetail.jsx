@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { FOREX } from "@/lib/universe";
-import { analyze, analyzeStructure, to4h } from "@/lib/indicators";
+import { analyze, analyzeLiquiditySweep, to4h } from "@/lib/indicators";
 import { tvSymbol, TV_INTERVAL, tvUrl } from "@/lib/symbols";
 import TradingViewChart from "@/components/TradingViewChart";
+
+const PLAIN_STUDIES = []; // stable reference — avoids re-mounting the chart every render
 
 async function jget(url) {
   const r = await fetch(url, { cache: "no-store" });
@@ -37,34 +39,31 @@ function narrative(a, tf) {
   return `On the ${t}, ${a.symbol} is in a strong ${dir} (ADX ${a.adx.toFixed(0)}), with price on the ${side === "long" ? "upper" : "lower"} side of both EMA20 and EMA50 and the directional index confirming. Volatility is ${vol} (ATR ${a.atrPct.toFixed(2)}% of price). This is a continuation ${side} setup: enter near ${fmt(a.entry, a.symbol)}, place the stop 1.5×ATR away at ${fmt(a.stop, a.symbol)}, and target ${fmt(a.target, a.symbol)} (3×ATR) for a fixed 2:1 reward-to-risk. ${rsiNote}. The idea is invalidated on a close beyond the stop.`;
 }
 
-// Plain-English readout for Structure Setup mode.
+// Plain-English readout for Structure Setup mode (liquidity-sweep checklist).
 function narrativeStructure(s, tf) {
   if (!s) return "";
   const t = tf.toUpperCase();
-  const bits = [];
-
-  if (s.contDir) {
-    const side = s.contDir === "long" ? "long" : "short";
-    bits.push(
-      `Continuation entry: EMA50 crossed ${s.contDir === "long" ? "above" : "below"} EMA200 on the ${t}, and the Daily trend bias agrees (${s.dailyBias}). This is a mechanical ${side} entry near ${fmt(s.entry, s.symbol)}, stop ${fmt(s.stop, s.symbol)} (1.5×ATR), target ${fmt(s.target, s.symbol)} (3×ATR) for 2:1 reward-to-risk.`
-    );
-  } else if (s.emaCrossDir) {
-    bits.push(
-      `EMA50/EMA200 crossed ${s.emaCrossDir} on the ${t} just now, but the Daily bias (${s.dailyBias || "flat"}) doesn't agree yet — no continuation entry until it does.`
+  if (!s.bias) {
+    return `No liquidity-sweep reversal in progress on the ${t} right now — no recent sweep of a swing high/low has been followed by a structure shift. Nothing to check yet.`;
+  }
+  const side = s.bias === "long" ? "bullish" : "bearish";
+  const sweptWhat = s.bias === "long" ? "swing low" : "swing high";
+  const parts = [
+    `A ${side} reversal is in progress on the ${t}: price swept a prior ${sweptWhat} (wicked through and closed back), then confirmed a Market Structure Shift ${s.barsAgo != null ? `${s.barsAgo} bar(s) ago` : ""}.`,
+  ];
+  if (s.checklist?.fvg) {
+    parts.push(
+      `A Fair Value Gap formed in the reversal leg, completing the automated checklist. Entry sits mid-gap at ${fmt(s.entry, s.symbol)}, stop beyond the sweep at ${fmt(s.stop, s.symbol)}, target ${fmt(s.target, s.symbol)} for a fixed 1:2 risk/reward.`
     );
   } else {
-    bits.push(`No EMA50/EMA200 cross on the ${t} right now. Daily bias currently reads ${s.dailyBias || "flat"}.`);
+    parts.push(`No Fair Value Gap has formed yet in this leg — no formulaic entry until one does.`);
   }
-
-  if (s.reversalDir) {
-    bits.push(
-      `Reversal confirmation: RSI(30) just crossed ${s.reversalDir === "long" ? "above" : "below"} 50 on the ${t}. Treat this only as confirmation — first verify a break of structure, a sweep of liquidity beyond the prior swing ${s.reversalDir === "long" ? "low" : "high"}, and a change of character (ChoCH) reversing it, on the chart below. If that pattern is there, your entry/stop are placed relative to the sweep and ChoCH candle, not formulaic.`
-    );
+  if (s.breaker) {
+    parts.push(`Candidate Breaker Block: the candle at index ${s.breaker.index} (high ${fmt(s.breaker.high, s.symbol)}, low ${fmt(s.breaker.low, s.symbol)}) — confirm this yourself on the chart below before treating it as your flip zone.`);
   } else {
-    bits.push(`RSI(30) is at ${s.rsi30 != null ? s.rsi30.toFixed(0) : "—"} — no fresh cross of the 50 midline on the ${t} this bar.`);
+    parts.push(`No clear Breaker Block candidate was found — check the chart yourself for the right flip candle.`);
   }
-
-  return bits.join(" ");
+  return parts.join(" ");
 }
 
 export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }) {
@@ -96,23 +95,16 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
   const loadStructure = useCallback(async () => {
     setState("loading");
     try {
-      let entryBars, dailyBars;
+      let bars;
       if (mkt === "crypto") {
-        [{ bars: entryBars }, { bars: dailyBars }] = await Promise.all([
-          jget(`/api/klines?symbol=${symbol}&interval=${tf}&limit=500`),
-          jget(`/api/klines?symbol=${symbol}&interval=1d&limit=500`),
-        ]);
+        ({ bars } = await jget(`/api/klines?symbol=${symbol}&interval=${tf}&limit=300`));
       } else {
         const f = FOREX.find((x) => x.s === symbol);
         const ysym = encodeURIComponent(f ? f.y : symbol);
-        const [{ bars: raw }, daily] = await Promise.all([
-          jget(`/api/forex?symbol=${ysym}&range=3mo`),
-          jget(`/api/forex?symbol=${ysym}&interval=1d`),
-        ]);
-        entryBars = tf === "4h" ? to4h(raw) : raw;
-        dailyBars = daily.bars;
+        ({ bars } = await jget(`/api/forex?symbol=${ysym}&range=3mo`));
+        if (tf === "4h") bars = to4h(bars);
       }
-      const res = analyzeStructure(symbol, mkt, entryBars, dailyBars);
+      const res = analyzeLiquiditySweep(symbol, mkt, bars);
       setS(res);
       setState(res ? "ok" : "error");
     } catch {
@@ -134,8 +126,8 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
   const sigLabel = a && a.signal > 0 ? "▲ LONG" : a && a.signal < 0 ? "▼ SHORT" : "NO CLEAR TREND";
 
   // Structure mode display bits
-  const contClass = s && s.contDir === "long" ? "long" : s && s.contDir === "short" ? "short" : "flat";
-  const contLabel = s && s.contDir === "long" ? "▲ LONG (continuation)" : s && s.contDir === "short" ? "▼ SHORT (continuation)" : "NO CONTINUATION ENTRY";
+  const biasClass = s && s.bias === "long" ? "long" : s && s.bias === "short" ? "short" : "flat";
+  const biasLabel = s && s.bias === "long" ? "▲ BULLISH REVERSAL" : s && s.bias === "short" ? "▼ BEARISH REVERSAL" : "NO REVERSAL IN PROGRESS";
 
   const data = strategy === "structure" ? s : a;
 
@@ -152,7 +144,7 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
       <div className="detail-title">
         <h1>{symbol} <span className="mk">{mkt === "crypto" ? "CRYPTO" : "FOREX/GOLD"}</span></h1>
         {strategy === "structure" ? (
-          data && state === "ok" ? <span className={`pill ${contClass}`}>{contLabel}</span> : null
+          data && state === "ok" ? <span className={`pill ${biasClass}`}>{biasLabel}</span> : null
         ) : (
           data && state === "ok" ? <span className={`pill ${sigClass}`}>{sigLabel}</span> : null
         )}
@@ -183,16 +175,16 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
             </div>
             {strategy === "structure" ? (
               <div className="stats-card">
-                <Stat label="Daily Bias" value={s.dailyBias ? s.dailyBias.toUpperCase() : "—"} cls={s.dailyBias === "up" ? "long" : s.dailyBias === "down" ? "short" : ""} />
-                <Stat label={`EMA50/200 Cross (${tf.toUpperCase()})`} value={s.emaCrossDir ? (s.emaCrossDir === "up" ? "▲ up" : "▼ down") : "—"} />
-                <Stat label="Continuation Entry" value={s.contDir ? (s.contDir === "long" ? "Long" : "Short") : "—"} cls={contClass} />
-                <Stat label="Entry" value={s.contDir ? fmt(s.entry, symbol) : "—"} />
-                <Stat label="Stop (1.5×ATR)" value={s.contDir ? fmt(s.stop, symbol) : "—"} cls="short" />
-                <Stat label="Target (3×ATR)" value={s.contDir ? fmt(s.target, symbol) : "—"} cls="long" />
-                <Stat label="Reward : Risk" value={s.contDir ? `${s.rr.toFixed(1)} : 1` : "—"} />
-                <Stat label={`RSI(30) — ${tf.toUpperCase()}`} value={s.rsi30 != null ? s.rsi30.toFixed(0) : "—"} />
-                <Stat label="Reversal Confirm" value={s.reversalDir ? (s.reversalDir === "long" ? "Bull cross 50" : "Bear cross 50") : "—"} cls={s.reversalDir === "long" ? "long" : s.reversalDir === "short" ? "short" : ""} />
-                <Stat label="Volatility (ATR%)" value={`${s.atrPct.toFixed(2)}%`} />
+                <Stat label="Bias" value={s.bias ? (s.bias === "long" ? "Bullish" : "Bearish") : "—"} cls={biasClass} />
+                <Stat label="Liquidity Sweep" value={s.checklist?.sweep ? "✓ confirmed" : "—"} cls={s.checklist?.sweep ? biasClass : ""} />
+                <Stat label="Market Structure Shift" value={s.checklist?.mss ? "✓ confirmed" : "—"} cls={s.checklist?.mss ? biasClass : ""} />
+                <Stat label="Breaker Block" value={s.breaker ? `candidate: candle ${s.breaker.index}` : "—"} />
+                <Stat label="Fair Value Gap" value={s.checklist?.fvg ? "✓ found" : "—"} cls={s.checklist?.fvg ? biasClass : ""} />
+                <Stat label="Entry" value={s.setupReady ? fmt(s.entry, symbol) : "—"} />
+                <Stat label="Stop (sweep extreme)" value={s.setupReady ? fmt(s.stop, symbol) : "—"} cls="short" />
+                <Stat label="Target (1:2 R:R)" value={s.setupReady ? fmt(s.target, symbol) : "—"} cls="long" />
+                <Stat label="Reward : Risk" value={s.setupReady ? "2 : 1" : "—"} />
+                <Stat label="Bars since MSS" value={s.barsAgo != null ? String(s.barsAgo) : "—"} />
               </div>
             ) : (
               <div className="stats-card">
@@ -209,14 +201,14 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
           </div>
 
           <div className="chart-panel">
-            <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[tf]} />
+            <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[tf]} studies={strategy === "structure" ? PLAIN_STUDIES : undefined} />
           </div>
         </>
       ) : null}
 
       <div className="foot">
         {strategy === "structure" ? (
-          <>Chart has EMA50, EMA200, and RSI(30) added — use it to confirm BOS, liquidity sweep, and ChoCH yourself before acting on a Reversal Confirm signal. Continuation Entry levels are ATR-based (stop 1.5×ATR, target 3×ATR ⇒ 2:1).</>
+          <>Chart is plain price action on purpose — Liquidity Sweep, MSS, and FVG are computed from the data above; Breaker Block is a candidate only. Confirm the Breaker Block, and the overall pattern, visually before acting. Levels shown are sized for a fixed 1:2 risk/reward.</>
         ) : (
           <>Levels are ATR-based (stop 1.5×ATR, target 3×ATR ⇒ 2:1).</>
         )}{" "}

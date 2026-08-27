@@ -2,8 +2,19 @@
 
 import { useEffect, useRef } from "react";
 
+// Default overlays for Trend/ADX mode (matches that strategy's EMA20/EMA50 + RSI(14) logic).
+const TREND_STUDIES = [
+  { id: "MAExp@tv-basicstudies", inputs: { length: 20 } },
+  { id: "MAExp@tv-basicstudies", inputs: { length: 50 } },
+  { id: "RSI@tv-basicstudies", inputs: { length: 14 } },
+];
+
 // Embeds the TradingView Advanced Chart via the legacy tv.js widget loader.
-export default function TradingViewChart({ symbol, interval = "240", height = 520 }) {
+// `studies` defaults to the Trend/ADX overlays; pass an empty array for a plain
+// price chart (Structure Setup mode — liquidity sweeps/MSS/FVG/breaker blocks
+// aren't drawable via TradingView's basic-studies widget, so you verify those
+// visually on unobstructed candles instead).
+export default function TradingViewChart({ symbol, interval = "240", height = 520, studies = TREND_STUDIES }) {
   const ref = useRef(null);
 
   useEffect(() => {
@@ -25,11 +36,7 @@ export default function TradingViewChart({ symbol, interval = "240", height = 52
         hide_side_toolbar: false,
         allow_symbol_change: true,
         withdateranges: true,
-        studies: [
-          { id: "MAExp@tv-basicstudies", inputs: { length: 50 } },
-          { id: "MAExp@tv-basicstudies", inputs: { length: 200 } },
-          { id: "RSI@tv-basicstudies", inputs: { length: 30 } },
-        ],
+        studies,
         backgroundColor: "rgba(18, 28, 46, 1)",
         gridColor: "rgba(34, 48, 74, 0.6)",
       });
@@ -57,7 +64,7 @@ export default function TradingViewChart({ symbol, interval = "240", height = 52
     return () => {
       cancelled = true;
     };
-  }, [symbol, interval]);
+  }, [symbol, interval, studies]);
 
   return <div id="tv_advanced_chart" ref={ref} className="tvchart" style={{ height }} />;
 }

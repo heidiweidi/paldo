@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CRYPTO, FOREX } from "@/lib/universe";
-import { analyze, analyzeStructure, to4h } from "@/lib/indicators";
+import { analyze, analyzeLiquiditySweep, to4h } from "@/lib/indicators";
 
 async function jget(url) {
   const r = await fetch(url, { cache: "no-store" });
@@ -95,11 +95,11 @@ export default function Dashboard() {
   }, [tf]);
 
   // ---- Structure Setup mode ----
-  // Two independent, objective triggers layered on top of chart reading you do yourself:
-  //  - Reversal confirmation: RSI(30) crosses 50 on the entry timeframe. Only meaningful
-  //    after you've spotted a BOS -> liquidity sweep -> ChoCH by eye on the chart.
-  //  - Continuation entry: EMA50/EMA200 cross on the entry timeframe, taken only when it
-  //    agrees with the Daily trend bias. Gets an ATR-based stop/target like the trend mode.
+  // ICT/SMC liquidity-sweep checklist, single timeframe (the tf toggle above):
+  //   Liquidity Sweep -> Market Structure Shift (MSS) -> Breaker Block -> Fair
+  //   Value Gap (FVG) -> entry sized to a fixed 1:2 risk/reward.
+  // Sweep, MSS, and FVG are detected from the candles; Breaker Block is
+  // surfaced as a candidate only — confirm it yourself on the chart.
   const scanStructure = useCallback(async () => {
     setLoading(true);
     setNotice("");
@@ -114,11 +114,8 @@ export default function Dashboard() {
     await Promise.all(
       CRYPTO.map(async (sym) => {
         try {
-          const [{ bars: entryBars }, { bars: dailyBars }] = await Promise.all([
-            jget(`/api/klines?symbol=${sym}&interval=${interval}&limit=500`),
-            jget(`/api/klines?symbol=${sym}&interval=1d&limit=500`),
-          ]);
-          const r = analyzeStructure(sym, "crypto", entryBars, dailyBars);
+          const { bars } = await jget(`/api/klines?symbol=${sym}&interval=${interval}&limit=300`);
+          const r = analyzeLiquiditySweep(sym, "crypto", bars);
           if (r) out.push(r);
         } catch {
           fails.push(sym);
@@ -131,12 +128,9 @@ export default function Dashboard() {
     await Promise.all(
       FOREX.map(async (o) => {
         try {
-          const [{ bars: raw }, { bars: dailyBars }] = await Promise.all([
-            jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&range=3mo`),
-            jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&interval=1d`),
-          ]);
-          const entryBars = interval === "4h" ? to4h(raw) : raw;
-          const r = analyzeStructure(o.s, "forex", entryBars, dailyBars);
+          let { bars } = await jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&range=3mo`);
+          if (interval === "4h") bars = to4h(bars);
+          const r = analyzeLiquiditySweep(o.s, "forex", bars);
           if (r) out.push(r);
         } catch {
           fails.push(o.s);
@@ -147,8 +141,8 @@ export default function Dashboard() {
     );
 
     setRows2(out);
-    const sigCount = out.filter((r) => r.contDir || r.reversalDir).length;
-    setStatus(`Updated ${new Date().toLocaleString()} · ${out.length} assets · ${sigCount} signals`);
+    const sigCount = out.filter((r) => r.bias).length;
+    setStatus(`Updated ${new Date().toLocaleString()} · ${out.length} assets · ${sigCount} structure shifts`);
     if (fails.length) {
       setNotice(
         `Couldn't load ${fails.length} symbol(s): ${fails.join(", ")}. The market source may have rate-limited momentarily — press Scan to retry.`
@@ -181,11 +175,12 @@ export default function Dashboard() {
   const view2 = useMemo(() => {
     let r = rows2.slice();
     if (mkt !== "all") r = r.filter((x) => x.mkt === mkt);
-    if (onlySignals) r = r.filter((x) => x.contDir || x.reversalDir);
+    if (onlySignals) r = r.filter((x) => x.bias);
     r.sort((a, b) => {
-      const av = (a.contDir ? 2 : 0) + (a.reversalDir ? 1 : 0);
-      const bv = (b.contDir ? 2 : 0) + (b.reversalDir ? 1 : 0);
-      return bv - av;
+      const av = (a.setupReady ? 2 : 0) + (a.bias ? 1 : 0);
+      const bv = (b.setupReady ? 2 : 0) + (b.bias ? 1 : 0);
+      if (bv !== av) return bv - av;
+      return (a.barsAgo ?? 999) - (b.barsAgo ?? 999);
     });
     return r;
   }, [rows2, mkt, onlySignals]);
@@ -201,13 +196,13 @@ export default function Dashboard() {
 
   const cards2 = useMemo(() => {
     const scoped = rows2.filter((r) => mkt === "all" || r.mkt === mkt);
-    const cont = scoped.filter((r) => r.contDir);
-    const rev = scoped.filter((r) => r.reversalDir);
+    const shifted = scoped.filter((r) => r.bias);
+    const ready = scoped.filter((r) => r.setupReady);
     return {
-      contLongs: cont.filter((r) => r.contDir === "long").length,
-      contShorts: cont.filter((r) => r.contDir === "short").length,
-      revLongs: rev.filter((r) => r.reversalDir === "long").length,
-      revShorts: rev.filter((r) => r.reversalDir === "short").length,
+      shiftLongs: shifted.filter((r) => r.bias === "long").length,
+      shiftShorts: shifted.filter((r) => r.bias === "short").length,
+      readyLongs: ready.filter((r) => r.bias === "long").length,
+      readyShorts: ready.filter((r) => r.bias === "short").length,
     };
   }, [rows2, mkt]);
 
@@ -348,13 +343,13 @@ export default function Dashboard() {
       ) : (
         <>
           <div className="notice" style={{ marginBottom: 12 }}>
-            ⚠ <b>Reversal Confirm</b> is a trigger, not an entry: it only means RSI(30) crossed 50 on the {tf.toUpperCase()}. Confirm the setup yourself first — a break of structure (BOS), a sweep of liquidity beyond the prior swing, and a change of character (ChoCH) reversing it — on a chart with EMA50/EMA200/RSI(30) added (open any asset below). <b>Continuation Entry</b> is fully mechanical: EMA50/EMA200 crossed on the {tf.toUpperCase()}, agreeing with the Daily trend bias.
+            ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b> → 1:2 risk/reward. Sweep, MSS, and FVG are detected automatically on the {tf.toUpperCase()}. <b>Breaker Block is not</b> — the table shows a candidate candle, but confirm it yourself on the plain price chart (open any asset below) before entering. Entry/Stop/Target only appear once all three automated checks pass.
           </div>
 
           <div className="cards">
-            <div className="card"><div className="k">Continuation entries</div><div className="v"><span style={{ color: "var(--long)" }}>{cards2.contLongs}</span> / <span style={{ color: "var(--short)" }}>{cards2.contShorts}</span> <small>long/short</small></div></div>
-            <div className="card"><div className="k">Reversal confirmations</div><div className="v"><span style={{ color: "var(--long)" }}>{cards2.revLongs}</span> / <span style={{ color: "var(--short)" }}>{cards2.revShorts}</span> <small>long/short</small></div></div>
-            <div className="card"><div className="k">Entry timeframe</div><div className="v">{tf.toUpperCase()} <small>vs Daily bias</small></div></div>
+            <div className="card"><div className="k">Structure shifts</div><div className="v"><span style={{ color: "var(--long)" }}>{cards2.shiftLongs}</span> / <span style={{ color: "var(--short)" }}>{cards2.shiftShorts}</span> <small>bull/bear</small></div></div>
+            <div className="card"><div className="k">Full setups (+ FVG)</div><div className="v"><span style={{ color: "var(--long)" }}>{cards2.readyLongs}</span> / <span style={{ color: "var(--short)" }}>{cards2.readyShorts}</span> <small>bull/bear</small></div></div>
+            <div className="card"><div className="k">Entry timeframe</div><div className="v">{tf.toUpperCase()}</div></div>
             <div className="card"><div className="k">Assets scanned</div><div className="v">{rows2.length}</div></div>
           </div>
 
@@ -365,29 +360,29 @@ export default function Dashboard() {
                   <th>Asset</th>
                   <th>Price</th>
                   <th>Chg%</th>
-                  <th>Daily Bias</th>
-                  <th>EMA50/200 Cross ({tf.toUpperCase()})</th>
-                  <th>Continuation Entry</th>
+                  <th>Bias</th>
+                  <th>Sweep</th>
+                  <th>MSS</th>
+                  <th>Breaker (confirm yourself)</th>
+                  <th>FVG</th>
                   <th>Entry</th>
                   <th>Stop</th>
                   <th>Target</th>
                   <th>R:R</th>
-                  <th>RSI(30)</th>
-                  <th>Reversal Confirm</th>
+                  <th>Bars since MSS</th>
                 </tr>
               </thead>
               <tbody>
                 {view2.length === 0 ? (
-                  <tr><td colSpan={12} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
+                  <tr><td colSpan={13} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
                 ) : (
                   view2.map((r) => {
-                    const biasCls = r.dailyBias === "up" ? "up" : r.dailyBias === "down" ? "down" : "no";
-                    const contCls = r.contDir === "long" ? "up" : r.contDir === "short" ? "down" : "no";
-                    const revCls = r.reversalDir === "long" ? "up" : r.reversalDir === "short" ? "down" : "no";
+                    const biasCls = r.bias === "long" ? "up" : r.bias === "short" ? "down" : "no";
+                    const ck = (v) => (v ? <span className="pill long">✓</span> : <span className="pill flat">—</span>);
                     return (
                       <tr key={r.symbol}>
                         <td className="left">
-                          <span className={`dot ${contCls !== "no" ? contCls : revCls}`} />
+                          <span className={`dot ${biasCls}`} />
                           <a className="sym-link" href={`/asset/${r.symbol}?mkt=${r.mkt}&tf=${tf}${strategyParam}`} title={`Open ${r.symbol} structure setup & chart`}>
                             <span className="sym">{r.symbol}</span>
                             <span className="open-ico">↗</span>
@@ -399,36 +394,19 @@ export default function Dashboard() {
                           {r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%
                         </td>
                         <td>
-                          {r.dailyBias === "up" ? <span className="pill long">UP</span>
-                            : r.dailyBias === "down" ? <span className="pill short">DOWN</span>
-                            : <span className="pill flat">flat</span>}
-                        </td>
-                        <td>
-                          {r.emaCrossDir === "up" ? <span className="pill long">▲ cross up</span>
-                            : r.emaCrossDir === "down" ? <span className="pill short">▼ cross down</span>
+                          {r.bias === "long" ? <span className="pill long">▲ BULL</span>
+                            : r.bias === "short" ? <span className="pill short">▼ BEAR</span>
                             : <span className="pill flat">—</span>}
                         </td>
-                        <td>
-                          {r.contDir ? (
-                            <span className={`pill ${r.contDir === "long" ? "long" : "short"}`}>
-                              {r.contDir === "long" ? "▲ LONG" : "▼ SHORT"}
-                            </span>
-                          ) : <span className="pill flat">—</span>}
-                        </td>
-                        <td className="num">{r.contDir ? fmt(r.entry, r.symbol) : "—"}</td>
-                        <td className="num" style={{ color: "var(--short)" }}>{r.contDir ? fmt(r.stop, r.symbol) : "—"}</td>
-                        <td className="num" style={{ color: "var(--long)" }}>{r.contDir ? fmt(r.target, r.symbol) : "—"}</td>
-                        <td className="num rr">{r.contDir ? `${r.rr.toFixed(1)}:1` : "—"}</td>
-                        <td className="num" style={{ color: r.rsi30 > 50 ? "var(--long)" : "var(--short)" }}>
-                          {r.rsi30 != null ? r.rsi30.toFixed(0) : "—"}
-                        </td>
-                        <td>
-                          {r.reversalDir ? (
-                            <span className={`pill ${r.reversalDir === "long" ? "long" : "short"}`}>
-                              {r.reversalDir === "long" ? "▲ bull x50" : "▼ bear x50"}
-                            </span>
-                          ) : <span className="pill flat">—</span>}
-                        </td>
+                        <td>{ck(r.checklist?.sweep)}</td>
+                        <td>{ck(r.checklist?.mss)}</td>
+                        <td>{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</td>
+                        <td>{ck(r.checklist?.fvg)}</td>
+                        <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
+                        <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
+                        <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? fmt(r.target, r.symbol) : "—"}</td>
+                        <td className="num rr">{r.setupReady ? "1:2" : "—"}</td>
+                        <td className="num">{r.barsAgo != null ? r.barsAgo : "—"}</td>
                       </tr>
                     );
                   })
@@ -438,7 +416,7 @@ export default function Dashboard() {
           </div>
 
           <div className="foot">
-            <b>How to read it:</b> <b>Daily Bias</b> is EMA50 vs EMA200 (+ price) alignment on Daily bars. <b>Continuation Entry</b> fires only when the {tf.toUpperCase()} EMA50/EMA200 cross agrees with that Daily bias — it ships with an ATR-based stop/target (1.5×ATR / 3×ATR ⇒ 2:1), same risk model as Trend/ADX mode. <b>Reversal Confirm</b> fires when RSI(30) crosses the 50 midline on the {tf.toUpperCase()} — treat it strictly as a confirmation for a BOS → liquidity sweep → ChoCH pattern you've already spotted visually; there's no automated entry/stop for it since that placement is inherently discretionary (relative to the sweep and ChoCH candle).
+            <b>How to read it:</b> <b>Bias</b> is the direction of the reversal in progress (bull = swept a low then shifted up; bear = swept a high then shifted down). <b>Sweep</b>/<b>MSS</b>/<b>FVG</b> are detected from candles on the {tf.toUpperCase()}. <b>Breaker</b> only ever shows a candidate candle to check — it is never treated as confirmed. Entry/Stop/Target appear once Sweep + MSS + FVG all pass: entry is the middle of the FVG, stop is the sweep candle's wick extreme, target is sized for a fixed 1:2 risk/reward. Still confirm the Breaker Block yourself before entering.
             <br /><br />
             <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
           </div>
