@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { FOREX } from "@/lib/universe";
-import { analyze, analyzeLiquiditySweep, to4h } from "@/lib/indicators";
+import { analyzeMTF, to4h } from "@/lib/indicators";
 import { tvSymbol, TV_INTERVAL, tvUrl } from "@/lib/symbols";
 import TradingViewChart from "@/components/TradingViewChart";
 import PositionChart from "@/components/PositionChart";
@@ -23,147 +23,94 @@ function fmt(n, sym) {
   return n.toLocaleString(undefined, { minimumFractionDigits: dp > 4 ? 2 : dp, maximumFractionDigits: dp });
 }
 
-// Turn the computed analysis into a plain-English trade idea (Trend/ADX mode).
-function narrative(a, tf) {
-  if (!a) return "";
-  const t = tf.toUpperCase();
-  const vol = a.vol ? a.vol.toLowerCase() : "moderate";
-  if (a.signal === 0) {
-    return `On the ${t}, ${a.symbol} is not showing a clean, aligned trend right now — price and the EMAs are not stacked in one direction, or ADX (${a.adx.toFixed(0)}) is too weak to call continuation. No high-conviction setup; wait for the trend to resolve.`;
+// Plain-English readout: 4H bias for context, 1H checklist as the entry trigger.
+function narrative(m) {
+  if (!m) return "";
+  if (!m.bias4h) {
+    return `No liquidity-sweep reversal in progress on the 4H right now — no recent sweep of a swing high/low has been followed by a structure shift. Nothing to check on 1H yet.`;
   }
-  const dir = a.signal > 0 ? "uptrend" : "downtrend";
-  const side = a.signal > 0 ? "long" : "short";
-  const rsiNote =
-    a.rsi > 70 ? "RSI is overbought — a pullback entry is safer than chasing"
-    : a.rsi < 30 ? "RSI is oversold — momentum is stretched, manage risk tightly"
-    : `RSI ${a.rsi.toFixed(0)} leaves room to run`;
-  return `On the ${t}, ${a.symbol} is in a strong ${dir} (ADX ${a.adx.toFixed(0)}), with price on the ${side === "long" ? "upper" : "lower"} side of both EMA20 and EMA50 and the directional index confirming. Volatility is ${vol} (ATR ${a.atrPct.toFixed(2)}% of price). This is a continuation ${side} setup: enter near ${fmt(a.entry, a.symbol)}, place the stop 1.5×ATR away at ${fmt(a.stop, a.symbol)}, and target ${fmt(a.target, a.symbol)} (3×ATR) for a fixed 2:1 reward-to-risk. ${rsiNote}. The idea is invalidated on a close beyond the stop.`;
-}
+  const side4h = m.bias4h === "long" ? "bullish" : "bearish";
+  const parts = [`4H bias is ${side4h}: price swept a prior swing and confirmed a Market Structure Shift on the 4H.`];
 
-// Plain-English readout for Structure Setup mode (liquidity-sweep checklist).
-function narrativeStructure(s, tf) {
-  if (!s) return "";
-  const t = tf.toUpperCase();
-  if (!s.bias) {
-    return `No liquidity-sweep reversal in progress on the ${t} right now — no recent sweep of a swing high/low has been followed by a structure shift. Nothing to check yet.`;
-  }
-  const side = s.bias === "long" ? "bullish" : "bearish";
-  const sweptWhat = s.bias === "long" ? "swing low" : "swing high";
-  const parts = [
-    `A ${side} reversal is in progress on the ${t}: price swept a prior ${sweptWhat} (wicked through and closed back), then confirmed a Market Structure Shift ${s.barsAgo != null ? `${s.barsAgo} bar(s) ago` : ""}.`,
-  ];
-  if (s.checklist?.fvg) {
+  if (!m.bias1h) {
+    parts.push(`1H hasn't shown a matching reversal yet — no sweep/MSS on the 1H to act on.`);
+  } else if (!m.aligned) {
+    parts.push(`1H has its own reversal in progress, but it's ${m.bias1h === "long" ? "bullish" : "bearish"} — opposite the 4H bias, so this isn't a valid entry trigger yet.`);
+  } else if (!m.checklist?.fvg) {
+    parts.push(`1H is aligned with the 4H bias (Sweep + MSS confirmed on 1H), but no Fair Value Gap has formed yet in the 1H reversal leg — no formulaic entry until one does.`);
+  } else {
     parts.push(
-      `A Fair Value Gap formed in the reversal leg, completing the automated checklist. Entry sits mid-gap at ${fmt(s.entry, s.symbol)}, stop beyond the sweep at ${fmt(s.stop, s.symbol)}, target ${fmt(s.target, s.symbol)} for a fixed 1:2 risk/reward.`
+      `1H is aligned and complete: Sweep → MSS → FVG all confirmed on the 1H, ${m.barsAgo != null ? `${m.barsAgo} bar(s) since the 1H MSS` : ""}. Entry sits mid-gap at ${fmt(m.entry, m.symbol)}, stop beyond the 1H sweep at ${fmt(m.stop, m.symbol)}, target ${fmt(m.target, m.symbol)} for a fixed 1:2 risk/reward.`
     );
-  } else {
-    parts.push(`No Fair Value Gap has formed yet in this leg — no formulaic entry until one does.`);
   }
-  if (s.breaker) {
-    parts.push(`Candidate Breaker Block: the candle at index ${s.breaker.index} (high ${fmt(s.breaker.high, s.symbol)}, low ${fmt(s.breaker.low, s.symbol)}) — confirm this yourself on the chart below before treating it as your flip zone.`);
-  } else {
-    parts.push(`No clear Breaker Block candidate was found — check the chart yourself for the right flip candle.`);
+
+  if (m.breaker) {
+    parts.push(`Candidate 1H Breaker Block: the candle at index ${m.breaker.index} (high ${fmt(m.breaker.high, m.symbol)}, low ${fmt(m.breaker.low, m.symbol)}) — confirm this yourself on the chart before treating it as your flip zone.`);
   }
+
   return parts.join(" ");
 }
 
-export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }) {
-  const [tf, setTf] = useState(tf0 === "1h" ? "1h" : "4h");
-  const [a, setA] = useState(null);
-  const [s, setS] = useState(null);
-  const [bars, setBars] = useState(null);
+export default function AssetDetail({ symbol, mkt }) {
+  const [chartTf, setChartTf] = useState("1h"); // which timeframe the charts display — entry (1H) or bias (4H)
+  const [m, setM] = useState(null);
+  const [bars4h, setBars4h] = useState(null);
+  const [bars1h, setBars1h] = useState(null);
   const [state, setState] = useState("loading"); // loading | ok | error
 
-  const loadTrend = useCallback(async () => {
+  const load = useCallback(async () => {
     setState("loading");
     try {
-      let bars0;
+      let b4h, b1h;
       if (mkt === "crypto") {
-        ({ bars: bars0 } = await jget(`/api/klines?symbol=${symbol}&interval=${tf}`));
-      } else {
-        const f = FOREX.find((x) => x.s === symbol);
-        ({ bars: bars0 } = await jget(`/api/forex?symbol=${encodeURIComponent(f ? f.y : symbol)}`));
-        if (tf === "4h") bars0 = to4h(bars0);
-      }
-      const res = analyze(symbol, mkt, bars0);
-      if (res) res.vol = res.atrPct >= (mkt === "crypto" ? 3 : 0.5) ? "High" : res.atrPct >= (mkt === "crypto" ? 1.5 : 0.25) ? "Medium" : "Low";
-      setA(res);
-      setBars(bars0);
-      setState(res ? "ok" : "error");
-    } catch {
-      setState("error");
-    }
-  }, [symbol, mkt, tf]);
-
-  const loadStructure = useCallback(async () => {
-    setState("loading");
-    try {
-      let bars0;
-      if (mkt === "crypto") {
-        ({ bars: bars0 } = await jget(`/api/klines?symbol=${symbol}&interval=${tf}&limit=300`));
+        [{ bars: b4h }, { bars: b1h }] = await Promise.all([
+          jget(`/api/klines?symbol=${symbol}&interval=4h&limit=300`),
+          jget(`/api/klines?symbol=${symbol}&interval=1h&limit=300`),
+        ]);
       } else {
         const f = FOREX.find((x) => x.s === symbol);
         const ysym = encodeURIComponent(f ? f.y : symbol);
-        ({ bars: bars0 } = await jget(`/api/forex?symbol=${ysym}&range=3mo`));
-        if (tf === "4h") bars0 = to4h(bars0);
+        const { bars: raw1h } = await jget(`/api/forex?symbol=${ysym}&range=3mo`);
+        b1h = raw1h;
+        b4h = to4h(raw1h);
       }
-      const res = analyzeLiquiditySweep(symbol, mkt, bars0);
-      setS(res);
-      setBars(bars0);
+      const res = analyzeMTF(symbol, mkt, b4h, b1h);
+      setM(res);
+      setBars4h(b4h);
+      setBars1h(b1h);
       setState(res ? "ok" : "error");
     } catch {
       setState("error");
     }
-  }, [symbol, mkt, tf]);
+  }, [symbol, mkt]);
 
-  useEffect(() => {
-    if (strategy === "structure") loadStructure();
-    else loadTrend();
-  }, [strategy, loadTrend, loadStructure]);
+  useEffect(() => { load(); }, [load]);
 
-  const idea = useMemo(() => (strategy === "structure" ? narrativeStructure(s, tf) : narrative(a, tf)), [strategy, s, a, tf]);
+  const idea = useMemo(() => narrative(m), [m]);
   const tvSym = tvSymbol(mkt, symbol);
-  const backHref = strategy === "structure" ? `/?tf=${tf}&strategy=structure` : `/?tf=${tf}`;
+  const chartBars = chartTf === "1h" ? bars1h : bars4h;
 
-  // Trend mode display bits
-  const sigClass = a && a.signal > 0 ? "long" : a && a.signal < 0 ? "short" : "flat";
-  const sigLabel = a && a.signal > 0 ? "▲ LONG" : a && a.signal < 0 ? "▼ SHORT" : "NO CLEAR TREND";
-
-  // Structure mode display bits
-  const biasClass = s && s.bias === "long" ? "long" : s && s.bias === "short" ? "short" : "flat";
-  const biasLabel = s && s.bias === "long" ? "▲ BULLISH REVERSAL" : s && s.bias === "short" ? "▼ BEARISH REVERSAL" : "NO REVERSAL IN PROGRESS";
-
-  const data = strategy === "structure" ? s : a;
-
-  // Whichever mode is active, only surface a position to draw once there's an
-  // actual computed entry (Trend/ADX: signal !== 0; Structure Setup: setupReady).
-  const hasPosition = strategy === "structure" ? !!(s && s.setupReady) : !!(a && a.signal !== 0);
-  const positionEntry = hasPosition ? data.entry : null;
-  const positionStop = hasPosition ? data.stop : null;
-  const positionTarget = hasPosition ? data.target : null;
+  const biasClass = m && m.bias4h === "long" ? "long" : m && m.bias4h === "short" ? "short" : "flat";
+  const biasLabel = m && m.bias4h === "long" ? "▲ BULLISH REVERSAL (4H)" : m && m.bias4h === "short" ? "▼ BEARISH REVERSAL (4H)" : "NO REVERSAL IN PROGRESS";
 
   return (
     <div className="wrap">
       <div className="detail-head">
-        <Link href={backHref} className="back">← Back to scanner</Link>
+        <Link href="/" className="back">← Back to scanner</Link>
         <div className="seg">
-          <button className={tf === "1h" ? "active" : ""} onClick={() => setTf("1h")}>1H</button>
-          <button className={tf === "4h" ? "active" : ""} onClick={() => setTf("4h")}>4H</button>
+          <button className={chartTf === "1h" ? "active" : ""} onClick={() => setChartTf("1h")}>1H (entry)</button>
+          <button className={chartTf === "4h" ? "active" : ""} onClick={() => setChartTf("4h")}>4H (bias)</button>
         </div>
       </div>
 
       <div className="detail-title">
         <h1>{symbol} <span className="mk">{mkt === "crypto" ? "CRYPTO" : "FOREX/GOLD"}</span></h1>
-        {strategy === "structure" ? (
-          data && state === "ok" ? <span className={`pill ${biasClass}`}>{biasLabel}</span> : null
-        ) : (
-          data && state === "ok" ? <span className={`pill ${sigClass}`}>{sigLabel}</span> : null
-        )}
-        {data && state === "ok" ? (
+        {m && state === "ok" ? <span className={`pill ${biasClass}`}>{biasLabel}</span> : null}
+        {m && state === "ok" ? (
           <div className="price-now">
-            {fmt(data.price, symbol)}{" "}
-            <small style={{ color: data.chg >= 0 ? "var(--long)" : "var(--short)" }}>
-              {data.chg >= 0 ? "+" : ""}{data.chg.toFixed(2)}%
+            {fmt(m.price, symbol)}{" "}
+            <small style={{ color: m.chg >= 0 ? "var(--long)" : "var(--short)" }}>
+              {m.chg >= 0 ? "+" : ""}{m.chg.toFixed(2)}%
             </small>
           </div>
         ) : null}
@@ -174,55 +121,42 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
         <div className="notice">Couldn't load data for {symbol}. The source may have rate-limited — go back and retry, or check the symbol.</div>
       ) : null}
 
-      {data && state === "ok" ? (
+      {m && state === "ok" ? (
         <>
           <div className="idea-grid">
             <div className="idea-card">
-              <div className="idea-h">{strategy === "structure" ? "Structure setup" : "Trade idea"}</div>
+              <div className="idea-h">Structure setup</div>
               <p className="idea-text">{idea}</p>
-              <a className="tv-ext" href={tvUrl(mkt, symbol, tf)} target="_blank" rel="noreferrer">
+              <a className="tv-ext" href={tvUrl(mkt, symbol, chartTf)} target="_blank" rel="noreferrer">
                 Open full chart on TradingView ↗
               </a>
             </div>
-            {strategy === "structure" ? (
-              <div className="stats-card">
-                <Stat label="Bias" value={s.bias ? (s.bias === "long" ? "Bullish" : "Bearish") : "—"} cls={biasClass} />
-                <Stat label="Liquidity Sweep" value={s.checklist?.sweep ? "✓ confirmed" : "—"} cls={s.checklist?.sweep ? biasClass : ""} />
-                <Stat label="Market Structure Shift" value={s.checklist?.mss ? "✓ confirmed" : "—"} cls={s.checklist?.mss ? biasClass : ""} />
-                <Stat label="Breaker Block" value={s.breaker ? `candidate: candle ${s.breaker.index}` : "—"} />
-                <Stat label="Fair Value Gap" value={s.checklist?.fvg ? "✓ found" : "—"} cls={s.checklist?.fvg ? biasClass : ""} />
-                <Stat label="Entry" value={s.setupReady ? fmt(s.entry, symbol) : "—"} />
-                <Stat label="Stop (sweep extreme)" value={s.setupReady ? fmt(s.stop, symbol) : "—"} cls="short" />
-                <Stat label="Target (1:2 R:R)" value={s.setupReady ? fmt(s.target, symbol) : "—"} cls="long" />
-                <Stat label="Reward : Risk" value={s.setupReady ? "2 : 1" : "—"} />
-                <Stat label="Bars since MSS" value={s.barsAgo != null ? String(s.barsAgo) : "—"} />
-              </div>
-            ) : (
-              <div className="stats-card">
-                <Stat label="Direction" value={a.signal === 0 ? "—" : a.signal > 0 ? "Long" : "Short"} cls={sigClass} />
-                <Stat label="Entry" value={a.signal === 0 ? "—" : fmt(a.entry, symbol)} />
-                <Stat label="Stop (1.5×ATR)" value={a.signal === 0 ? "—" : fmt(a.stop, symbol)} cls="short" />
-                <Stat label="Target (3×ATR)" value={a.signal === 0 ? "—" : fmt(a.target, symbol)} cls="long" />
-                <Stat label="Reward : Risk" value={a.signal === 0 ? "—" : `${a.rr.toFixed(1)} : 1`} />
-                <Stat label="Trend strength (ADX)" value={a.adx.toFixed(1)} />
-                <Stat label="Volatility (ATR%)" value={`${a.atrPct.toFixed(2)}% · ${a.vol}`} />
-                <Stat label="RSI(14)" value={a.rsi.toFixed(0)} />
-              </div>
-            )}
+            <div className="stats-card">
+              <Stat label="4H Bias" value={m.bias4h ? (m.bias4h === "long" ? "Bullish" : "Bearish") : "—"} cls={biasClass} />
+              <Stat label="1H Sweep" value={m.checklist?.sweep ? "✓ confirmed" : "—"} cls={m.checklist?.sweep ? biasClass : ""} />
+              <Stat label="1H Market Structure Shift" value={m.checklist?.mss ? "✓ confirmed" : "—"} cls={m.checklist?.mss ? biasClass : ""} />
+              <Stat label="1H / 4H Aligned" value={m.bias1h ? (m.aligned ? "✓ yes" : "✗ no") : "—"} cls={m.aligned ? biasClass : m.bias1h ? "short" : ""} />
+              <Stat label="1H Breaker Block" value={m.breaker ? `candidate: candle ${m.breaker.index}` : "—"} />
+              <Stat label="1H Fair Value Gap" value={m.checklist?.fvg ? "✓ found" : "—"} cls={m.checklist?.fvg ? biasClass : ""} />
+              <Stat label="Entry" value={m.setupReady ? fmt(m.entry, symbol) : "—"} />
+              <Stat label="Stop (1H sweep extreme)" value={m.setupReady ? fmt(m.stop, symbol) : "—"} cls="short" />
+              <Stat label="Target (1:2 R:R)" value={m.setupReady ? fmt(m.target, symbol) : "—"} cls="long" />
+              <Stat label="Bars since 1H MSS" value={m.barsAgo != null ? String(m.barsAgo) : "—"} />
+            </div>
           </div>
 
           <div className="chart-grid">
             <div className="chart-panel">
-              <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[tf]} studies={strategy === "structure" ? PLAIN_STUDIES : undefined} />
+              <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[chartTf]} studies={PLAIN_STUDIES} />
             </div>
-            {positionEntry != null ? (
+            {m.setupReady ? (
               <div className="chart-panel">
                 <div className="idea-h">
-                  Position — entry <span className="warn-txt">{fmt(positionEntry, symbol)}</span>
-                  {" · "}stop <span className="short-txt">{fmt(positionStop, symbol)}</span>
-                  {" · "}target <span className="long-txt">{fmt(positionTarget, symbol)}</span>
+                  Position (1H) — entry <span className="warn-txt">{fmt(m.entry, symbol)}</span>
+                  {" · "}stop <span className="short-txt">{fmt(m.stop, symbol)}</span>
+                  {" · "}target <span className="long-txt">{fmt(m.target, symbol)}</span>
                 </div>
-                <PositionChart bars={bars} entry={positionEntry} stop={positionStop} target={positionTarget} />
+                <PositionChart bars={bars1h} entry={m.entry} stop={m.stop} target={m.target} />
               </div>
             ) : null}
           </div>
@@ -230,11 +164,7 @@ export default function AssetDetail({ symbol, mkt, tf: tf0, strategy = "trend" }
       ) : null}
 
       <div className="foot">
-        {strategy === "structure" ? (
-          <>Chart is plain price action on purpose — Liquidity Sweep, MSS, and FVG are computed from the data above; Breaker Block is a candidate only. Confirm the Breaker Block, and the overall pattern, visually before acting. Levels shown are sized for a fixed 1:2 risk/reward.</>
-        ) : (
-          <>Levels are ATR-based (stop 1.5×ATR, target 3×ATR ⇒ 2:1).</>
-        )}{" "}
+        Chart is plain price action on purpose — Liquidity Sweep, MSS, and FVG are computed from the data above; Breaker Block is a candidate only. Confirm the Breaker Block, and the overall pattern, visually before acting. Levels shown are sized for a fixed 1:2 risk/reward, based on the 1H entry-timeframe setup.{" "}
         Educational signal simulation on live public data — <b>not financial advice</b>. Confirm on the chart before acting.
       </div>
     </div>

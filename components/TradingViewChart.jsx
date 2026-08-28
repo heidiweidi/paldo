@@ -2,19 +2,13 @@
 
 import { useEffect, useRef } from "react";
 
-// Default overlays for Trend/ADX mode (matches that strategy's EMA20/EMA50 + RSI(14) logic).
-const TREND_STUDIES = [
-  { id: "MAExp@tv-basicstudies", inputs: { length: 20 } },
-  { id: "MAExp@tv-basicstudies", inputs: { length: 50 } },
-  { id: "RSI@tv-basicstudies", inputs: { length: 14 } },
-];
+// Plain price action by default — Liquidity Sweep / MSS / FVG / Breaker Block
+// aren't drawable via TradingView's basic-studies widget, so structure is
+// verified visually on unobstructed candles rather than with indicator overlays.
+const NO_STUDIES = [];
 
 // Embeds the TradingView Advanced Chart via the legacy tv.js widget loader.
-// `studies` defaults to the Trend/ADX overlays; pass an empty array for a plain
-// price chart (Structure Setup mode — liquidity sweeps/MSS/FVG/breaker blocks
-// aren't drawable via TradingView's basic-studies widget, so you verify those
-// visually on unobstructed candles instead).
-export default function TradingViewChart({ symbol, interval = "240", height = 520, studies = TREND_STUDIES }) {
+export default function TradingViewChart({ symbol, interval = "240", height = 520, studies = NO_STUDIES }) {
   const ref = useRef(null);
 
   useEffect(() => {

@@ -11,7 +11,7 @@ export default async function Home() {
     <>
       <div className="topbar">
         <div className="brand">
-          Trend &amp; Volatility Scanner <span>· Crypto + Forex</span>
+          Structure Setup Scanner <span>· Crypto + Forex</span>
         </div>
         <div className="user">
           {user?.image ? (
