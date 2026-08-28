@@ -20,16 +20,19 @@ function fmt(n, sym) {
 export default function Dashboard() {
   const [mkt, setMkt] = useState("all");
   const [onlySignals, setOnlySignals] = useState(true);
-  const [rows, setRows] = useState([]);
+  const [rowsA, setRowsA] = useState([]); // 4H bias -> 15m entry
+  const [rowsB, setRowsB] = useState([]); // 1H bias -> 5m entry
   const [status, setStatus] = useState("Loading live data…");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Structure Setup scanner — ICT/SMC liquidity-sweep checklist, multi-timeframe:
-  //   4H sets the reversal bias (Sweep -> MSS on the 4H).
-  //   1H is the entry strategy: its own independent Sweep -> MSS -> FVG
-  //   checklist is what actually triggers a ready setup, and only when its
-  //   direction agrees with the 4H bias. Breaker Block stays a visual check.
+  // Structure Setup scanner — ICT/SMC liquidity-sweep checklist, run as two
+  // independent higher-timeframe/entry-timeframe pairings side by side:
+  //   Pairing A: 4H bias -> 15m entry
+  //   Pairing B: 1H bias -> 5m entry
+  // Each pairing sets its bias on the higher TF (Sweep -> MSS), then looks for
+  // its own Sweep -> MSS -> FVG on the entry TF. Target is the next unswept
+  // opposing swing (POI) on the higher TF, falling back to a fixed 1:2 R:R.
   const scan = useCallback(async () => {
     setLoading(true);
     setNotice("");
@@ -38,17 +41,22 @@ export default function Dashboard() {
     const total = CRYPTO.length + FOREX.length;
     const tick = () => setStatus(`Scanning ${done}/${total}…`);
     tick();
-    const out = [];
+    const outA = [];
+    const outB = [];
 
     await Promise.all(
       CRYPTO.map(async (sym) => {
         try {
-          const [{ bars: bars4h }, { bars: bars1h }] = await Promise.all([
+          const [{ bars: b4h }, { bars: b1h }, { bars: b15m }, { bars: b5m }] = await Promise.all([
             jget(`/api/klines?symbol=${sym}&interval=4h&limit=300`),
             jget(`/api/klines?symbol=${sym}&interval=1h&limit=300`),
+            jget(`/api/klines?symbol=${sym}&interval=15m&limit=300`),
+            jget(`/api/klines?symbol=${sym}&interval=5m&limit=300`),
           ]);
-          const r = analyzeMTF(sym, "crypto", bars4h, bars1h);
-          if (r) out.push(r);
+          const a = analyzeMTF(sym, "crypto", b4h, b15m);
+          const b = analyzeMTF(sym, "crypto", b1h, b5m);
+          if (a) outA.push(a);
+          if (b) outB.push(b);
         } catch {
           fails.push(sym);
         } finally {
@@ -60,10 +68,16 @@ export default function Dashboard() {
     await Promise.all(
       FOREX.map(async (o) => {
         try {
-          const { bars: raw1h } = await jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&range=3mo`);
-          const bars4h = to4h(raw1h);
-          const r = analyzeMTF(o.s, "forex", bars4h, raw1h);
-          if (r) out.push(r);
+          const [{ bars: raw1h }, { bars: b15m }, { bars: b5m }] = await Promise.all([
+            jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&range=3mo`),
+            jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&interval=15m&range=10d`),
+            jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&interval=5m&range=5d`),
+          ]);
+          const b4h = to4h(raw1h);
+          const a = analyzeMTF(o.s, "forex", b4h, b15m);
+          const b = analyzeMTF(o.s, "forex", raw1h, b5m);
+          if (a) outA.push(a);
+          if (b) outB.push(b);
         } catch {
           fails.push(o.s);
         } finally {
@@ -72,9 +86,10 @@ export default function Dashboard() {
       })
     );
 
-    setRows(out);
-    const sigCount = out.filter((r) => r.setupReady).length;
-    setStatus(`Updated ${new Date().toLocaleString()} · ${out.length} assets · ${sigCount} ready setups`);
+    setRowsA(outA);
+    setRowsB(outB);
+    const readyCount = outA.filter((r) => r.setupReady).length + outB.filter((r) => r.setupReady).length;
+    setStatus(`Updated ${new Date().toLocaleString()} · ${outA.length} assets · ${readyCount} ready setups`);
     if (fails.length) {
       setNotice(
         `Couldn't load ${fails.length} symbol(s): ${fails.join(", ")}. The market source may have rate-limited momentarily — press Scan to retry.`
@@ -84,31 +99,6 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => { scan(); }, [scan]);
-
-  const view = useMemo(() => {
-    let r = rows.slice();
-    if (mkt !== "all") r = r.filter((x) => x.mkt === mkt);
-    if (onlySignals) r = r.filter((x) => x.aligned);
-    r.sort((a, b) => {
-      const av = (a.setupReady ? 2 : 0) + (a.aligned ? 1 : 0);
-      const bv = (b.setupReady ? 2 : 0) + (b.aligned ? 1 : 0);
-      if (bv !== av) return bv - av;
-      return (a.barsAgo ?? 999) - (b.barsAgo ?? 999);
-    });
-    return r;
-  }, [rows, mkt, onlySignals]);
-
-  const cards = useMemo(() => {
-    const scoped = rows.filter((r) => mkt === "all" || r.mkt === mkt);
-    const aligned = scoped.filter((r) => r.aligned);
-    const ready = scoped.filter((r) => r.setupReady);
-    return {
-      alignedLongs: aligned.filter((r) => r.bias1h === "long").length,
-      alignedShorts: aligned.filter((r) => r.bias1h === "short").length,
-      readyLongs: ready.filter((r) => r.bias1h === "long").length,
-      readyShorts: ready.filter((r) => r.bias1h === "short").length,
-    };
-  }, [rows, mkt]);
 
   return (
     <div className="wrap">
@@ -133,13 +123,72 @@ export default function Dashboard() {
       {notice ? <div className="notice">⚠ {notice}</div> : null}
 
       <div className="notice" style={{ marginBottom: 12 }}>
-        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b> → 1:2 risk/reward. <b>4H Bias</b> is the higher-timeframe reversal direction (sweep + MSS on the 4H). <b>1H</b> is the entry strategy — its own Sweep/MSS/FVG checklist is the actual trigger, only counted once it agrees with the 4H bias. <b>Breaker Block is never automated</b> — the table shows a candidate candle; confirm it yourself on the plain price chart (open any asset below) before entering.
+        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>. Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger: <b>4H → 15m</b> and <b>1H → 5m</b>. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering.
       </div>
 
+      <PairingSection
+        title="4H Bias → 15m Entry"
+        rows={rowsA}
+        mkt={mkt}
+        onlySignals={onlySignals}
+        loading={loading}
+        higherLabel="4H"
+        lowerLabel="15m"
+      />
+
+      <PairingSection
+        title="1H Bias → 5m Entry"
+        rows={rowsB}
+        mkt={mkt}
+        onlySignals={onlySignals}
+        loading={loading}
+        higherLabel="1H"
+        lowerLabel="5m"
+      />
+
+      <div className="foot">
+        <b>How to read it:</b> <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes <i>and</i> agrees with the higher-TF bias. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the R:R column). Breaker Block is always a candidate to check yourself, never auto-confirmed.
+        <br /><br />
+        <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
+      </div>
+    </div>
+  );
+}
+
+function PairingSection({ title, rows, mkt, onlySignals, loading, higherLabel, lowerLabel }) {
+  const view = useMemo(() => {
+    let r = rows.slice();
+    if (mkt !== "all") r = r.filter((x) => x.mkt === mkt);
+    if (onlySignals) r = r.filter((x) => x.aligned);
+    r.sort((a, b) => {
+      const av = (a.setupReady ? 2 : 0) + (a.aligned ? 1 : 0);
+      const bv = (b.setupReady ? 2 : 0) + (b.aligned ? 1 : 0);
+      if (bv !== av) return bv - av;
+      return (a.barsAgo ?? 999) - (b.barsAgo ?? 999);
+    });
+    return r;
+  }, [rows, mkt, onlySignals]);
+
+  const cards = useMemo(() => {
+    const scoped = rows.filter((r) => mkt === "all" || r.mkt === mkt);
+    const aligned = scoped.filter((r) => r.aligned);
+    const ready = scoped.filter((r) => r.setupReady);
+    return {
+      alignedLongs: aligned.filter((r) => r.biasLow === "long").length,
+      alignedShorts: aligned.filter((r) => r.biasLow === "short").length,
+      readyLongs: ready.filter((r) => r.biasLow === "long").length,
+      readyShorts: ready.filter((r) => r.biasLow === "short").length,
+    };
+  }, [rows, mkt]);
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <h2 style={{ fontSize: 15, margin: "0 0 10px", color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".4px" }}>{title}</h2>
+
       <div className="cards">
-        <div className="card"><div className="k">4H/1H aligned</div><div className="v"><span style={{ color: "var(--long)" }}>{cards.alignedLongs}</span> / <span style={{ color: "var(--short)" }}>{cards.alignedShorts}</span> <small>bull/bear</small></div></div>
+        <div className="card"><div className="k">{higherLabel}/{lowerLabel} aligned</div><div className="v"><span style={{ color: "var(--long)" }}>{cards.alignedLongs}</span> / <span style={{ color: "var(--short)" }}>{cards.alignedShorts}</span> <small>bull/bear</small></div></div>
         <div className="card"><div className="k">Ready setups (+ FVG)</div><div className="v"><span style={{ color: "var(--long)" }}>{cards.readyLongs}</span> / <span style={{ color: "var(--short)" }}>{cards.readyShorts}</span> <small>bull/bear</small></div></div>
-        <div className="card"><div className="k">Bias / Entry timeframe</div><div className="v">4H <small>/ 1H</small></div></div>
+        <div className="card"><div className="k">Bias / Entry timeframe</div><div className="v">{higherLabel} <small>/ {lowerLabel}</small></div></div>
         <div className="card"><div className="k">Assets scanned</div><div className="v">{rows.length}</div></div>
       </div>
 
@@ -150,16 +199,16 @@ export default function Dashboard() {
               <th>Asset</th>
               <th>Price</th>
               <th>Chg%</th>
-              <th>4H Bias</th>
-              <th>1H Sweep</th>
-              <th>1H MSS</th>
-              <th>1H Breaker (confirm yourself)</th>
-              <th>1H FVG</th>
+              <th>{higherLabel} Bias</th>
+              <th>{lowerLabel} Sweep</th>
+              <th>{lowerLabel} MSS</th>
+              <th>{lowerLabel} Breaker (confirm yourself)</th>
+              <th>{lowerLabel} FVG</th>
               <th>Entry</th>
               <th>Stop</th>
               <th>Target</th>
               <th>R:R</th>
-              <th>Bars since 1H MSS</th>
+              <th>Bars since {lowerLabel} MSS</th>
             </tr>
           </thead>
           <tbody>
@@ -167,7 +216,7 @@ export default function Dashboard() {
               <tr><td colSpan={13} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
             ) : (
               view.map((r) => {
-                const biasCls = r.bias4h === "long" ? "up" : r.bias4h === "short" ? "down" : "no";
+                const biasCls = r.biasHigh === "long" ? "up" : r.biasHigh === "short" ? "down" : "no";
                 const ck = (v) => (v ? <span className="pill long">✓</span> : <span className="pill flat">—</span>);
                 return (
                   <tr key={r.symbol}>
@@ -184,10 +233,10 @@ export default function Dashboard() {
                       {r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%
                     </td>
                     <td>
-                      {r.bias4h === "long" ? <span className="pill long">▲ BULL</span>
-                        : r.bias4h === "short" ? <span className="pill short">▼ BEAR</span>
+                      {r.biasHigh === "long" ? <span className="pill long">▲ BULL</span>
+                        : r.biasHigh === "short" ? <span className="pill short">▼ BEAR</span>
                         : <span className="pill flat">—</span>}
-                      {r.bias4h && !r.aligned ? <small style={{ marginLeft: 6, color: "var(--muted)" }}>1H not aligned</small> : null}
+                      {r.biasHigh && !r.aligned ? <small style={{ marginLeft: 6, color: "var(--muted)" }}>{lowerLabel} not aligned</small> : null}
                     </td>
                     <td>{ck(r.checklist?.sweep)}</td>
                     <td>{ck(r.checklist?.mss)}</td>
@@ -195,8 +244,8 @@ export default function Dashboard() {
                     <td>{ck(r.checklist?.fvg)}</td>
                     <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
                     <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
-                    <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? fmt(r.target, r.symbol) : "—"}</td>
-                    <td className="num rr">{r.setupReady ? "1:2" : "—"}</td>
+                    <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</td>
+                    <td className="num rr">{r.setupReady ? `${r.rr.toFixed(1)}:1` : "—"}</td>
                     <td className="num">{r.barsAgo != null ? r.barsAgo : "—"}</td>
                   </tr>
                 );
@@ -204,12 +253,6 @@ export default function Dashboard() {
             )}
           </tbody>
         </table>
-      </div>
-
-      <div className="foot">
-        <b>How to read it:</b> <b>4H Bias</b> is the higher-timeframe reversal direction (a 4H liquidity sweep followed by a 4H structure shift). <b>1H Sweep/MSS/FVG</b> are the entry-timeframe checklist — the actual trigger — detected independently on 1H candles. A row only shows Entry/Stop/Target once the 1H checklist completes <i>and</i> agrees with the 4H bias. Entry is the middle of the 1H Fair Value Gap, stop is the 1H sweep candle's wick extreme, target is sized for a fixed 1:2 risk/reward. Breaker Block is always a candidate to check yourself, never auto-confirmed.
-        <br /><br />
-        <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
       </div>
     </div>
   );

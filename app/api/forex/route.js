@@ -5,16 +5,20 @@ export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const ysym = searchParams.get("symbol") || "";
   // Yahoo has no native 4h; we pull 60m and the client aggregates to 4h when needed.
-  // Daily bars (used for structure-mode's higher-timeframe bias / EMA200 warmup) are
-  // requested natively with a longer range.
-  const wantsDaily = searchParams.get("interval") === "1d";
-  const interval = wantsDaily ? "1d" : "60m";
-  // Structure mode needs more 60m warmup bars (for EMA200 once aggregated to 4h) than the
-  // original screener does; allow the caller to widen the range. Yahoo allows up to ~730d
-  // of 60m history.
+  // Daily bars (higher-timeframe bias / EMA warmup) are requested natively with a
+  // longer range. 5m/15m (entry-timeframe strategies) are native too, but Yahoo
+  // caps intraday-under-60m history at ~60 days.
+  const reqInterval = searchParams.get("interval");
+  const wantsDaily = reqInterval === "1d";
+  const INTRADAY = ["5m", "15m", "60m"];
+  const interval = wantsDaily ? "1d" : (INTRADAY.includes(reqInterval) ? reqInterval : "60m");
+
   const reqRange = searchParams.get("range");
-  const allowedRanges = wantsDaily ? ["1y", "2y", "5y"] : ["1mo", "3mo", "6mo"];
-  const range = allowedRanges.includes(reqRange) ? reqRange : wantsDaily ? "2y" : "1mo";
+  let allowedRanges, defaultRange;
+  if (wantsDaily) { allowedRanges = ["1y", "2y", "5y"]; defaultRange = "2y"; }
+  else if (interval === "60m") { allowedRanges = ["1mo", "3mo", "6mo"]; defaultRange = "1mo"; }
+  else { allowedRanges = ["5d", "10d", "1mo", "60d"]; defaultRange = "5d"; } // Yahoo's ~60d cap on 5m/15m
+  const range = allowedRanges.includes(reqRange) ? reqRange : defaultRange;
   if (!ysym) return json({ error: "symbol required" }, 400);
 
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(

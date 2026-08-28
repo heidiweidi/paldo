@@ -7,7 +7,7 @@ const HOSTS = [
   "https://data-api.binance.vision",
 ];
 
-const VALID_INTERVALS = ["1h", "4h", "1d"];
+const VALID_INTERVALS = ["5m", "15m", "1h", "4h", "1d"];
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
