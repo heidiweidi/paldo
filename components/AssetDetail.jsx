@@ -64,7 +64,7 @@ function narrative(m, p) {
       missing.push(`${p.higherLabel} trend strength (ADX ${m.confluence?.adx?.value != null ? m.confluence.adx.value.toFixed(1) : "n/a"}, needs > ${m.confluence?.adx?.threshold ?? 0})`);
     }
     if (!m.confluence?.volume?.ok) {
-      missing.push(`${p.lowerLabel} volume confirmation (${m.confluence?.volume?.ratio ? `${m.confluence.volume.ratio.toFixed(1)}× its 20-bar average, needs ≥ 1.5×` : "no volume data available"})`);
+      missing.push(`volume on the ${p.lowerLabel} MSS candle (${m.confluence?.volume?.ratio ? `${m.confluence.volume.ratio.toFixed(1)}× its own trailing average, needs ≥ 1.5×` : "no volume data available"})`);
     }
     parts.push(`${p.lowerLabel} checklist is complete — Sweep → MSS → FVG all confirmed — but confluence isn't there yet: ${missing.join(" and ")}. No entry until that clears.`);
   } else {
@@ -213,7 +213,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
                 cls={m.confluence?.adx?.ok ? "long" : m.confluence?.adx?.value != null ? "short" : ""}
               />
               <Stat
-                label={`${p.lowerLabel} Volume Confirmation`}
+                label={`${p.lowerLabel} MSS Candle Volume`}
                 value={m.confluence?.volume?.ratio ? `${m.confluence.volume.ratio.toFixed(1)}× avg${m.confluence.volume.ok ? " ✓" : " ✗"}` : "— (no volume data)"}
                 cls={m.confluence?.volume?.ok ? "long" : m.confluence?.volume?.ratio ? "short" : ""}
               />

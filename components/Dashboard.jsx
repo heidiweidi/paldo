@@ -169,7 +169,7 @@ export default function Dashboard() {
       {notice ? <div className="notice">⚠ {notice}</div> : null}
 
       <div className="notice" style={{ marginBottom: 12 }}>
-        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, confirmed with <b>ADX(14) &gt; {adxMin}</b> on the bias timeframe (trending, not choppy — adjust the slider above, 0–{ADX_MAX}) and <b>volume ≥ 1.5× its 20-bar average</b> on the entry candle (real participation, not a thin fakeout). Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering.
+        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, confirmed with <b>ADX(14) &gt; {adxMin}</b> on the bias timeframe (trending, not choppy — adjust the slider above, 0–{ADX_MAX}) and <b>volume ≥ 1.5× its own trailing average on the MSS candle itself</b> — the bar that actually confirmed the reversal, long or short, not just whatever's trading now. Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering.
       </div>
 
       <div className="seg" style={{ marginBottom: 14 }}>
@@ -291,7 +291,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
                     <td>{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</td>
                     <td>{ck(r.checklist?.fvg)}</td>
                     <td title={r.confluence?.adx?.value != null ? `ADX ${r.confluence.adx.value.toFixed(1)} (need > ${r.confluence.adx.threshold})` : ""}>{ck(r.confluence?.adx?.ok)}</td>
-                    <td title={r.confluence?.volume?.ratio ? `${r.confluence.volume.ratio.toFixed(1)}× avg` : ""}>{ck(r.confluence?.volume?.ok)}</td>
+                    <td title={r.confluence?.volume?.ratio ? `${r.confluence.volume.ratio.toFixed(1)}× avg on the MSS candle` : ""}>{ck(r.confluence?.volume?.ok)}</td>
                     <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
                     <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
                     <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</td>
