@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CRYPTO, FOREX } from "@/lib/universe";
 import { analyzeMTF, to4h } from "@/lib/indicators";
+import PositionChart from "@/components/PositionChart";
 
 async function jget(url) {
   const r = await fetch(url, { cache: "no-store" });
@@ -130,6 +131,13 @@ export default function Dashboard() {
     () => rowsA.filter((r) => r.setupReady).length + rowsB.filter((r) => r.setupReady).length,
     [rowsA, rowsB]
   );
+  // Lookup so an expanded row can pull its own entry-timeframe candles for
+  // the position chart, without re-fetching — barsMap already has them.
+  const barsBySymbol = useMemo(() => {
+    const map = {};
+    for (const x of barsMap) map[x.sym] = x;
+    return map;
+  }, [barsMap]);
   const statusLine = lastUpdated
     ? `Updated ${lastUpdated.toLocaleString()} · ${barsMap.length} assets · ${readyCount} ready setups`
     : status;
@@ -189,6 +197,8 @@ export default function Dashboard() {
         loading={loading}
         higherLabel={PAIRING_TABS[pairing].higherLabel}
         lowerLabel={PAIRING_TABS[pairing].lowerLabel}
+        barsBySymbol={barsBySymbol}
+        lowerKey={pairing === "A" ? "b15m" : "b5m"}
       />
 
       <div className="foot">
@@ -200,7 +210,7 @@ export default function Dashboard() {
   );
 }
 
-function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, higherLabel, lowerLabel }) {
+function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, higherLabel, lowerLabel, barsBySymbol, lowerKey }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const toggleRow = (sym) => {
     setExpanded((prev) => {
@@ -275,6 +285,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
                     biasCls={biasCls}
                     isOpen={isOpen}
                     onToggle={() => toggleRow(r.symbol)}
+                    lowerBars={barsBySymbol?.[r.symbol]?.[lowerKey] ?? null}
                   />
                 );
               })
@@ -286,7 +297,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
   );
 }
 
-function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onToggle }) {
+function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onToggle, lowerBars }) {
   const ck = (v) => (v ? <span className="pill long">✓</span> : <span className="pill flat">—</span>);
   return (
     <>
@@ -358,6 +369,18 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
               <div className="stat"><div className="stat-k">Bars since {lowerLabel} MSS</div><div className="stat-v">{r.barsAgo != null ? r.barsAgo : "—"}</div></div>
               <div className="stat"><div className="stat-k">Still catchable?</div><div className="stat-v">{r.setupReady ? <EntryWindowPill status={r.entryWindow} /> : "—"}</div></div>
             </div>
+
+            {r.setupReady && lowerBars ? (
+              <div className="chart-panel" style={{ marginTop: 4, marginBottom: 12 }}>
+                <div className="pos-head">
+                  <span className="lbl">Position ({lowerLabel})</span>
+                  <span className="pos-badge entry">Entry {fmt(r.entry, r.symbol)}</span>
+                  <span className="pos-badge stop">Stop {fmt(r.stop, r.symbol)}</span>
+                  <span className="pos-badge target">Target {fmt(r.target, r.symbol)}</span>
+                </div>
+                <PositionChart bars={lowerBars} entry={r.entry} stop={r.stop} target={r.target} height={220} />
+              </div>
+            ) : null}
           </td>
         </tr>
       ) : null}
