@@ -7,6 +7,7 @@ import { analyzeMTF, to4h } from "@/lib/indicators";
 import { tvSymbol, TV_INTERVAL, tvUrl } from "@/lib/symbols";
 import TradingViewChart from "@/components/TradingViewChart";
 import PositionChart from "@/components/PositionChart";
+import StrategyDiagram from "@/components/StrategyDiagram";
 
 const PLAIN_STUDIES = []; // stable reference — avoids re-mounting the chart every render
 
@@ -199,6 +200,13 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
               <a className="tv-ext" href={tvUrl(mkt, symbol, chartTf)} target="_blank" rel="noreferrer">
                 Open full chart on TradingView ↗
               </a>
+              <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
+                <div className="idea-h">What this pattern looks like</div>
+                <StrategyDiagram />
+                <p style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.5, margin: "8px 0 0" }}>
+                  Generic illustration of the checklist above, not {symbol}'s actual chart: price sweeps a swing low (①), reverses and closes back above the prior structure level (② MSS), the last opposite-colored candle before that break is the Breaker Block candidate (③) to confirm yourself, price leaves a Fair Value Gap on the way up (④), and entry/stop/target are sized so the reward is roughly double the risk (⑤). A bearish setup is the same shape mirrored upside-down.
+                </p>
+              </div>
             </div>
             <div className="stats-card">
               <Stat label={`${p.higherLabel} Bias`} value={m.biasHigh ? (m.biasHigh === "long" ? "Bullish" : "Bearish") : "—"} cls={biasClass} />

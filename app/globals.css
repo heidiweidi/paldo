@@ -65,6 +65,8 @@ th{background:var(--panel2);color:var(--muted);font-weight:600;font-size:12px;te
 th.sorted::after{content:" ↓";color:var(--accent)}
 th.asc.sorted::after{content:" ↑"}
 tbody tr:hover{background:rgba(76,141,255,.05)}
+tr.expand-row:hover{background:transparent}
+tr.expand-row td{background:var(--panel2);border-bottom:1px solid var(--line)}
 td.empty{text-align:center;color:var(--muted);padding:30px}
 .sym{font-weight:700}
 .mk{color:var(--muted);font-size:11px;margin-left:6px;padding:1px 6px;border-radius:6px;background:var(--chip)}

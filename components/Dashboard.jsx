@@ -169,7 +169,7 @@ export default function Dashboard() {
       {notice ? <div className="notice">⚠ {notice}</div> : null}
 
       <div className="notice" style={{ marginBottom: 12 }}>
-        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, confirmed with <b>ADX(14) &gt; {adxMin}</b> on the bias timeframe (trending, not choppy — adjust the slider above, 0–{ADX_MAX}) and <b>volume ≥ 1.5× its own trailing average on the MSS candle itself</b> — the bar that actually confirmed the reversal, long or short, not just whatever's trading now. Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering.
+        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, confirmed with <b>ADX(14) &gt; {adxMin}</b> on the bias timeframe (trending, not choppy — adjust the slider above, 0–{ADX_MAX}). Volume on the MSS candle is still measured and shown (expand a row to see it) but no longer required to flag a setup — it was screening out too many otherwise-valid setups. Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering. Click a row's arrow to expand full details; click the symbol to open its chart in a new tab.
       </div>
 
       <div className="seg" style={{ marginBottom: 14 }}>
@@ -192,7 +192,7 @@ export default function Dashboard() {
       />
 
       <div className="foot">
-        <b>How to read it:</b> <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes, agrees with the higher-TF bias, <i>and</i> both confluence checks (ADX &gt; your slider threshold, high volume) pass — lower the ADX slider toward 0 to see more candidates, raise it to demand a stronger trend. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the R:R column). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
+        <b>How to read it:</b> The table shows just Asset, Price, Entry, Stop, and Target to avoid horizontal scrolling — expand a row (▸) for the full breakdown: Chg%, Bias, the Sweep/MSS/Breaker/FVG checklist, ADX, MSS-candle volume, R:R, bars since MSS, and Still catchable. <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes, agrees with the higher-TF bias, <i>and</i> ADX &gt; your slider threshold — lower the ADX slider toward 0 to see more candidates, raise it to demand a stronger trend. Volume is shown for context only and no longer blocks a setup. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the expanded R:R). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
         <br /><br />
         <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
       </div>
@@ -201,6 +201,15 @@ export default function Dashboard() {
 }
 
 function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, higherLabel, lowerLabel }) {
+  const [expanded, setExpanded] = useState(() => new Set());
+  const toggleRow = (sym) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(sym)) next.delete(sym); else next.add(sym);
+      return next;
+    });
+  };
+
   const view = useMemo(() => {
     let r = rows.slice();
     if (mkt !== "all") r = r.filter((x) => x.mkt === mkt);
@@ -241,64 +250,32 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
         <table>
           <thead>
             <tr>
+              <th style={{ width: 28 }}></th>
               <th>Asset</th>
               <th>Price</th>
-              <th>Chg%</th>
-              <th>{higherLabel} Bias</th>
-              <th>{lowerLabel} Sweep</th>
-              <th>{lowerLabel} MSS</th>
-              <th>{lowerLabel} Breaker (confirm yourself)</th>
-              <th>{lowerLabel} FVG</th>
-              <th>ADX</th>
-              <th>Volume</th>
               <th>Entry</th>
               <th>Stop</th>
               <th>Target</th>
-              <th>R:R</th>
-              <th>Bars since {lowerLabel} MSS</th>
-              <th>Still catchable?</th>
             </tr>
           </thead>
           <tbody>
             {view.length === 0 ? (
-              <tr><td colSpan={16} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
+              <tr><td colSpan={6} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
             ) : (
               view.map((r) => {
                 const biasCls = r.biasHigh === "long" ? "up" : r.biasHigh === "short" ? "down" : "no";
-                const ck = (v) => (v ? <span className="pill long">✓</span> : <span className="pill flat">—</span>);
+                const isOpen = expanded.has(r.symbol);
                 return (
-                  <tr key={r.symbol}>
-                    <td className="left">
-                      <span className={`dot ${biasCls}`} />
-                      <a className="sym-link" href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}&adxMin=${r.confluence?.adx?.threshold ?? 0}`} title={`Open ${r.symbol} structure setup & chart`}>
-                        <span className="sym">{r.symbol}</span>
-                        <span className="open-ico">↗</span>
-                      </a>
-                      <span className="mk">{r.mkt === "crypto" ? "CRYPTO" : "FX"}</span>
-                    </td>
-                    <td className="num">{fmt(r.price, r.symbol)}</td>
-                    <td className="num" style={{ color: r.chg >= 0 ? "var(--long)" : "var(--short)" }}>
-                      {r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%
-                    </td>
-                    <td>
-                      {r.biasHigh === "long" ? <span className="pill long">▲ BULL</span>
-                        : r.biasHigh === "short" ? <span className="pill short">▼ BEAR</span>
-                        : <span className="pill flat">—</span>}
-                      {r.biasHigh && !r.aligned ? <small style={{ marginLeft: 6, color: "var(--muted)" }}>{lowerLabel} not aligned</small> : null}
-                    </td>
-                    <td>{ck(r.checklist?.sweep)}</td>
-                    <td>{ck(r.checklist?.mss)}</td>
-                    <td>{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</td>
-                    <td>{ck(r.checklist?.fvg)}</td>
-                    <td title={r.confluence?.adx?.value != null ? `ADX ${r.confluence.adx.value.toFixed(1)} (need > ${r.confluence.adx.threshold})` : ""}>{ck(r.confluence?.adx?.ok)}</td>
-                    <td title={r.confluence?.volume?.ratio ? `${r.confluence.volume.ratio.toFixed(1)}× avg on the MSS candle` : ""}>{ck(r.confluence?.volume?.ok)}</td>
-                    <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
-                    <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
-                    <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</td>
-                    <td className="num rr">{r.setupReady ? `${r.rr.toFixed(1)}:1` : "—"}</td>
-                    <td className="num">{r.barsAgo != null ? r.barsAgo : "—"}</td>
-                    <td>{r.setupReady ? <EntryWindowPill status={r.entryWindow} /> : "—"}</td>
-                  </tr>
+                  <RowGroup
+                    key={r.symbol}
+                    r={r}
+                    pairingKey={pairingKey}
+                    higherLabel={higherLabel}
+                    lowerLabel={lowerLabel}
+                    biasCls={biasCls}
+                    isOpen={isOpen}
+                    onToggle={() => toggleRow(r.symbol)}
+                  />
                 );
               })
             )}
@@ -306,5 +283,84 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
         </table>
       </div>
     </div>
+  );
+}
+
+function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onToggle }) {
+  const ck = (v) => (v ? <span className="pill long">✓</span> : <span className="pill flat">—</span>);
+  return (
+    <>
+      <tr>
+        <td>
+          <button
+            className="btn"
+            style={{ padding: "2px 7px", fontSize: 12, lineHeight: 1 }}
+            onClick={onToggle}
+            aria-label={isOpen ? "Collapse details" : "Expand details"}
+            title={isOpen ? "Collapse details" : "Expand details"}
+          >
+            {isOpen ? "▾" : "▸"}
+          </button>
+        </td>
+        <td className="left">
+          <span className={`dot ${biasCls}`} />
+          <a
+            className="sym-link"
+            href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}&adxMin=${r.confluence?.adx?.threshold ?? 0}`}
+            title={`Open ${r.symbol} structure setup & chart`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span className="sym">{r.symbol}</span>
+            <span className="open-ico">↗</span>
+          </a>
+          <span className="mk">{r.mkt === "crypto" ? "CRYPTO" : "FX"}</span>
+        </td>
+        <td className="num">{fmt(r.price, r.symbol)}</td>
+        <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
+        <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
+        <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</td>
+      </tr>
+      {isOpen ? (
+        <tr className="expand-row">
+          <td></td>
+          <td colSpan={5} style={{ whiteSpace: "normal", verticalAlign: "top" }}>
+            <div className="stats-card" style={{ border: "none", padding: "4px 0 12px", background: "transparent" }}>
+              <div className="stat">
+                <div className="stat-k">Chg%</div>
+                <div className="stat-v" style={{ color: r.chg >= 0 ? "var(--long)" : "var(--short)" }}>{r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%</div>
+              </div>
+              <div className="stat">
+                <div className="stat-k">{higherLabel} Bias</div>
+                <div className="stat-v">
+                  {r.biasHigh === "long" ? <span className="pill long">▲ BULL</span>
+                    : r.biasHigh === "short" ? <span className="pill short">▼ BEAR</span>
+                    : <span className="pill flat">—</span>}
+                  {r.biasHigh && !r.aligned ? <small style={{ marginLeft: 6, color: "var(--muted)" }}>{lowerLabel} not aligned</small> : null}
+                </div>
+              </div>
+              <div className="stat"><div className="stat-k">{lowerLabel} Sweep</div><div className="stat-v">{ck(r.checklist?.sweep)}</div></div>
+              <div className="stat"><div className="stat-k">{lowerLabel} MSS</div><div className="stat-v">{ck(r.checklist?.mss)}</div></div>
+              <div className="stat">
+                <div className="stat-k">{lowerLabel} Breaker (confirm yourself)</div>
+                <div className="stat-v">{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</div>
+              </div>
+              <div className="stat"><div className="stat-k">{lowerLabel} FVG</div><div className="stat-v">{ck(r.checklist?.fvg)}</div></div>
+              <div className="stat">
+                <div className="stat-k">ADX (gates readiness)</div>
+                <div className="stat-v" title={r.confluence?.adx?.value != null ? `ADX ${r.confluence.adx.value.toFixed(1)} (need > ${r.confluence.adx.threshold})` : ""}>{ck(r.confluence?.adx?.ok)}</div>
+              </div>
+              <div className="stat">
+                <div className="stat-k">MSS Volume (info only)</div>
+                <div className="stat-v" title={r.confluence?.volume?.ratio ? `${r.confluence.volume.ratio.toFixed(1)}× avg on the MSS candle` : ""}>{ck(r.confluence?.volume?.ok)}</div>
+              </div>
+              <div className="stat"><div className="stat-k">R:R</div><div className="stat-v rr">{r.setupReady ? `${r.rr.toFixed(1)}:1` : "—"}</div></div>
+              <div className="stat"><div className="stat-k">Bars since {lowerLabel} MSS</div><div className="stat-v">{r.barsAgo != null ? r.barsAgo : "—"}</div></div>
+              <div className="stat"><div className="stat-k">Still catchable?</div><div className="stat-v">{r.setupReady ? <EntryWindowPill status={r.entryWindow} /> : "—"}</div></div>
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
   );
 }
