@@ -61,7 +61,7 @@ function narrative(m, p) {
   } else if (!m.setupReady) {
     const missing = [];
     if (!m.confluence?.adx?.ok) {
-      missing.push(`${p.higherLabel} trend strength (ADX ${m.confluence?.adx?.value != null ? m.confluence.adx.value.toFixed(1) : "n/a"}, needs > 20)`);
+      missing.push(`${p.higherLabel} trend strength (ADX ${m.confluence?.adx?.value != null ? m.confluence.adx.value.toFixed(1) : "n/a"}, needs > ${m.confluence?.adx?.threshold ?? 0})`);
     }
     if (!m.confluence?.volume?.ok) {
       missing.push(`${p.lowerLabel} volume confirmation (${m.confluence?.volume?.ratio ? `${m.confluence.volume.ratio.toFixed(1)}× its 20-bar average, needs ≥ 1.5×` : "no volume data available"})`);
@@ -84,10 +84,12 @@ function narrative(m, p) {
   return parts.join(" ");
 }
 
-export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
+const ADX_MAX = 50;
+
+export default function AssetDetail({ symbol, mkt, initialPairing = "A", initialAdxMin = 0 }) {
   const [pairing, setPairing] = useState(initialPairing); // "A": 4H->15m, "B": 1H->5m — set from the scanner tab that was clicked
   const [chartView, setChartView] = useState("lower"); // "lower" (entry) | "higher" (bias)
-  const [results, setResults] = useState(null); // { A: {...}, B: {...} }
+  const [adxMin, setAdxMin] = useState(initialAdxMin); // adjustable ADX confluence threshold, carried over from the scanner's slider
   const [bars, setBars] = useState(null); // { "4h", "1h", "15m", "5m" }
   const [state, setState] = useState("loading"); // loading | ok | error
 
@@ -117,7 +119,6 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
       }
       const a = analyzeMTF(symbol, mkt, b4h, b15m);
       const b = analyzeMTF(symbol, mkt, b1h, b5m);
-      setResults({ A: a, B: b });
       setBars({ "4h": b4h, "1h": b1h, "15m": b15m, "5m": b5m });
       setState(a || b ? "ok" : "error");
     } catch {
@@ -126,6 +127,15 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
   }, [symbol, mkt]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Re-scored from the fetched bars whenever the ADX slider moves — no re-fetch.
+  const results = useMemo(() => {
+    if (!bars) return null;
+    return {
+      A: analyzeMTF(symbol, mkt, bars["4h"], bars["15m"], adxMin),
+      B: analyzeMTF(symbol, mkt, bars["1h"], bars["5m"], adxMin),
+    };
+  }, [bars, symbol, mkt, adxMin]);
 
   const p = PAIRINGS[pairing];
   const m = results ? results[pairing] : null;
@@ -148,6 +158,18 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
           <button className={chartView === "lower" ? "active" : ""} onClick={() => setChartView("lower")}>{p.lowerLabel} (entry)</button>
           <button className={chartView === "higher" ? "active" : ""} onClick={() => setChartView("higher")}>{p.higherLabel} (bias)</button>
         </div>
+        <label className="ck" style={{ gap: 8, marginLeft: "auto" }}>
+          ADX filter &gt; {adxMin}
+          <input
+            type="range"
+            min={0}
+            max={ADX_MAX}
+            step={1}
+            value={adxMin}
+            onChange={(e) => setAdxMin(Number(e.target.value))}
+            style={{ width: 120 }}
+          />
+        </label>
       </div>
 
       <div className="detail-title">
@@ -186,8 +208,8 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
               <Stat label={`${p.lowerLabel} Breaker Block`} value={m.breaker ? `candidate: candle ${m.breaker.index}` : "—"} />
               <Stat label={`${p.lowerLabel} Fair Value Gap`} value={m.checklist?.fvg ? "✓ found" : "—"} cls={m.checklist?.fvg ? biasClass : ""} />
               <Stat
-                label={`${p.higherLabel} Trend Strength (ADX)`}
-                value={m.confluence?.adx?.value != null ? `${m.confluence.adx.value.toFixed(1)}${m.confluence.adx.ok ? " ✓ >20" : " ✗ ≤20"}` : "—"}
+                label={`${p.higherLabel} Trend Strength (ADX > ${adxMin})`}
+                value={m.confluence?.adx?.value != null ? `${m.confluence.adx.value.toFixed(1)}${m.confluence.adx.ok ? " ✓" : " ✗"}` : "—"}
                 cls={m.confluence?.adx?.ok ? "long" : m.confluence?.adx?.value != null ? "short" : ""}
               />
               <Stat

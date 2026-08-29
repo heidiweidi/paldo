@@ -36,12 +36,18 @@ const PAIRING_TABS = {
   B: { label: "1H → 5m", title: "1H Bias → 5m Entry", higherLabel: "1H", lowerLabel: "5m" },
 };
 
+const ADX_MAX = 50;
+
 export default function Dashboard() {
   const [mkt, setMkt] = useState("all");
   const [onlySignals, setOnlySignals] = useState(true);
   const [pairing, setPairing] = useState("A"); // which timeframe pairing's table is shown
-  const [rowsA, setRowsA] = useState([]); // 4H bias -> 15m entry
-  const [rowsB, setRowsB] = useState([]); // 1H bias -> 5m entry
+  const [adxMin, setAdxMin] = useState(0); // adjustable ADX confluence threshold, 0 = filter effectively off
+  // Raw bars per symbol — kept separate from analysis so moving the ADX
+  // slider re-scores instantly against already-fetched data instead of
+  // re-hitting Binance/Yahoo (and risking rate limits) on every drag.
+  const [barsMap, setBarsMap] = useState([]); // [{ sym, mkt, b4h, b1h, b15m, b5m }]
+  const [lastUpdated, setLastUpdated] = useState(null);
   const [status, setStatus] = useState("Loading live data…");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
@@ -61,8 +67,7 @@ export default function Dashboard() {
     const total = CRYPTO.length + FOREX.length;
     const tick = () => setStatus(`Scanning ${done}/${total}…`);
     tick();
-    const outA = [];
-    const outB = [];
+    const collected = [];
 
     await Promise.all(
       CRYPTO.map(async (sym) => {
@@ -73,10 +78,7 @@ export default function Dashboard() {
             jget(`/api/klines?symbol=${sym}&interval=15m&limit=300`),
             jget(`/api/klines?symbol=${sym}&interval=5m&limit=300`),
           ]);
-          const a = analyzeMTF(sym, "crypto", b4h, b15m);
-          const b = analyzeMTF(sym, "crypto", b1h, b5m);
-          if (a) outA.push(a);
-          if (b) outB.push(b);
+          collected.push({ sym, mkt: "crypto", b4h, b1h, b15m, b5m });
         } catch {
           fails.push(sym);
         } finally {
@@ -94,10 +96,7 @@ export default function Dashboard() {
             jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&interval=5m&range=5d`),
           ]);
           const b4h = to4h(raw1h);
-          const a = analyzeMTF(o.s, "forex", b4h, b15m);
-          const b = analyzeMTF(o.s, "forex", raw1h, b5m);
-          if (a) outA.push(a);
-          if (b) outB.push(b);
+          collected.push({ sym: o.s, mkt: "forex", b4h, b1h: raw1h, b15m, b5m });
         } catch {
           fails.push(o.s);
         } finally {
@@ -106,10 +105,8 @@ export default function Dashboard() {
       })
     );
 
-    setRowsA(outA);
-    setRowsB(outB);
-    const readyCount = outA.filter((r) => r.setupReady).length + outB.filter((r) => r.setupReady).length;
-    setStatus(`Updated ${new Date().toLocaleString()} · ${outA.length} assets · ${readyCount} ready setups`);
+    setBarsMap(collected);
+    setLastUpdated(new Date());
     if (fails.length) {
       setNotice(
         `Couldn't load ${fails.length} symbol(s): ${fails.join(", ")}. The market source may have rate-limited momentarily — press Scan to retry.`
@@ -119,6 +116,23 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => { scan(); }, [scan]);
+
+  // Re-scored from barsMap whenever the ADX threshold changes — no re-fetch.
+  const rowsA = useMemo(
+    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b4h, x.b15m, adxMin)).filter(Boolean),
+    [barsMap, adxMin]
+  );
+  const rowsB = useMemo(
+    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b1h, x.b5m, adxMin)).filter(Boolean),
+    [barsMap, adxMin]
+  );
+  const readyCount = useMemo(
+    () => rowsA.filter((r) => r.setupReady).length + rowsB.filter((r) => r.setupReady).length,
+    [rowsA, rowsB]
+  );
+  const statusLine = lastUpdated
+    ? `Updated ${lastUpdated.toLocaleString()} · ${barsMap.length} assets · ${readyCount} ready setups`
+    : status;
 
   return (
     <div className="wrap">
@@ -134,16 +148,28 @@ export default function Dashboard() {
           <input type="checkbox" checked={onlySignals} onChange={(e) => setOnlySignals(e.target.checked)} />
           Signals only
         </label>
+        <label className="ck" style={{ gap: 8 }}>
+          ADX filter &gt; {adxMin}
+          <input
+            type="range"
+            min={0}
+            max={ADX_MAX}
+            step={1}
+            value={adxMin}
+            onChange={(e) => setAdxMin(Number(e.target.value))}
+            style={{ width: 140 }}
+          />
+        </label>
         <button className="btn primary" onClick={scan} disabled={loading}>
           {loading ? "Scanning…" : "↻ Scan"}
         </button>
-        <div className="statusline">{status}</div>
+        <div className="statusline">{statusLine}</div>
       </div>
 
       {notice ? <div className="notice">⚠ {notice}</div> : null}
 
       <div className="notice" style={{ marginBottom: 12 }}>
-        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, confirmed with <b>ADX(14) &gt; 20</b> on the bias timeframe (trending, not choppy) and <b>volume ≥ 1.5× its 20-bar average</b> on the entry candle (real participation, not a thin fakeout). Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering.
+        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, confirmed with <b>ADX(14) &gt; {adxMin}</b> on the bias timeframe (trending, not choppy — adjust the slider above, 0–{ADX_MAX}) and <b>volume ≥ 1.5× its 20-bar average</b> on the entry candle (real participation, not a thin fakeout). Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering.
       </div>
 
       <div className="seg" style={{ marginBottom: 14 }}>
@@ -166,7 +192,7 @@ export default function Dashboard() {
       />
 
       <div className="foot">
-        <b>How to read it:</b> <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes, agrees with the higher-TF bias, <i>and</i> both confluence checks (ADX &gt; 20, high volume) pass. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the R:R column). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
+        <b>How to read it:</b> <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes, agrees with the higher-TF bias, <i>and</i> both confluence checks (ADX &gt; your slider threshold, high volume) pass — lower the ADX slider toward 0 to see more candidates, raise it to demand a stronger trend. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the R:R column). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
         <br /><br />
         <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
       </div>
@@ -223,7 +249,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
               <th>{lowerLabel} MSS</th>
               <th>{lowerLabel} Breaker (confirm yourself)</th>
               <th>{lowerLabel} FVG</th>
-              <th>ADX &gt; 20</th>
+              <th>ADX</th>
               <th>Volume</th>
               <th>Entry</th>
               <th>Stop</th>
@@ -244,7 +270,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
                   <tr key={r.symbol}>
                     <td className="left">
                       <span className={`dot ${biasCls}`} />
-                      <a className="sym-link" href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}`} title={`Open ${r.symbol} structure setup & chart`}>
+                      <a className="sym-link" href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}&adxMin=${r.confluence?.adx?.threshold ?? 0}`} title={`Open ${r.symbol} structure setup & chart`}>
                         <span className="sym">{r.symbol}</span>
                         <span className="open-ico">↗</span>
                       </a>
@@ -264,7 +290,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
                     <td>{ck(r.checklist?.mss)}</td>
                     <td>{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</td>
                     <td>{ck(r.checklist?.fvg)}</td>
-                    <td title={r.confluence?.adx?.value != null ? `ADX ${r.confluence.adx.value.toFixed(1)}` : ""}>{ck(r.confluence?.adx?.ok)}</td>
+                    <td title={r.confluence?.adx?.value != null ? `ADX ${r.confluence.adx.value.toFixed(1)} (need > ${r.confluence.adx.threshold})` : ""}>{ck(r.confluence?.adx?.ok)}</td>
                     <td title={r.confluence?.volume?.ratio ? `${r.confluence.volume.ratio.toFixed(1)}× avg` : ""}>{ck(r.confluence?.volume?.ok)}</td>
                     <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
                     <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
