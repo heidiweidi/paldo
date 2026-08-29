@@ -38,12 +38,18 @@ const PAIRING_TABS = {
 };
 
 const ADX_MAX = 50;
+const COIN_COUNTS = [25, 50, 100, 150];
 
 export default function Dashboard() {
   const [mkt, setMkt] = useState("all");
   const [onlySignals, setOnlySignals] = useState(true);
   const [pairing, setPairing] = useState("A"); // which timeframe pairing's table is shown
   const [adxMin, setAdxMin] = useState(0); // adjustable ADX confluence threshold, 0 = filter effectively off
+  // Crypto universe: either the curated fixed list in lib/universe.js, or
+  // the top N coins by market cap pulled live from CoinGecko. Forex/gold
+  // always comes from the fixed FOREX list — CoinGecko is crypto-only.
+  const [universe, setUniverse] = useState("curated"); // "curated" | "coingecko"
+  const [coinCount, setCoinCount] = useState(50);
   // Raw bars per symbol — kept separate from analysis so moving the ADX
   // slider re-scores instantly against already-fetched data instead of
   // re-hitting Binance/Yahoo (and risking rate limits) on every drag.
@@ -64,14 +70,34 @@ export default function Dashboard() {
     setLoading(true);
     setNotice("");
     const fails = [];
+    const noticeParts = [];
     let done = 0;
-    const total = CRYPTO.length + FOREX.length;
+
+    // Crypto universe: pull the top N coins by market cap from CoinGecko when
+    // that mode is selected, falling back to the curated list if the request
+    // fails (rate-limited, network hiccup, etc.) rather than scanning nothing.
+    let cryptoSymbols = CRYPTO;
+    if (universe === "coingecko") {
+      setStatus("Fetching top coins by market cap (CoinGecko)…");
+      try {
+        const { coins } = await jget(`/api/coingecko?limit=${coinCount}`);
+        if (Array.isArray(coins) && coins.length) {
+          cryptoSymbols = coins.map((c) => c.symbol);
+        } else {
+          noticeParts.push("CoinGecko returned no coins — used the curated list instead.");
+        }
+      } catch {
+        noticeParts.push("Couldn't reach CoinGecko — used the curated list instead.");
+      }
+    }
+
+    const total = cryptoSymbols.length + FOREX.length;
     const tick = () => setStatus(`Scanning ${done}/${total}…`);
     tick();
     const collected = [];
 
     await Promise.all(
-      CRYPTO.map(async (sym) => {
+      cryptoSymbols.map(async (sym) => {
         try {
           const [{ bars: b4h }, { bars: b1h }, { bars: b15m }, { bars: b5m }] = await Promise.all([
             jget(`/api/klines?symbol=${sym}&interval=4h&limit=300`),
@@ -109,12 +135,13 @@ export default function Dashboard() {
     setBarsMap(collected);
     setLastUpdated(new Date());
     if (fails.length) {
-      setNotice(
-        `Couldn't load ${fails.length} symbol(s): ${fails.join(", ")}. The market source may have rate-limited momentarily — press Scan to retry.`
+      noticeParts.push(
+        `Couldn't load ${fails.length} symbol(s): ${fails.join(", ")}. The market source may have rate-limited momentarily, or a CoinGecko top coin isn't listed as a USDT pair on Binance — press Scan to retry.`
       );
     }
+    if (noticeParts.length) setNotice(noticeParts.join(" "));
     setLoading(false);
-  }, []);
+  }, [universe, coinCount]);
 
   useEffect(() => { scan(); }, [scan]);
 
@@ -152,6 +179,25 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
+        <div className="seg" title="Which coins to scan — a fixed curated list, or the current top N by market cap from CoinGecko">
+          {[
+            { key: "curated", label: "Curated list" },
+            { key: "coingecko", label: "Top by market cap" },
+          ].map((o) => (
+            <button key={o.key} className={universe === o.key ? "active" : ""} onClick={() => setUniverse(o.key)}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        {universe === "coingecko" ? (
+          <select value={coinCount} onChange={(e) => setCoinCount(Number(e.target.value))}>
+            {COIN_COUNTS.map((n) => (
+              <option key={n} value={n}>
+                Top {n}
+              </option>
+            ))}
+          </select>
+        ) : null}
         <label className="ck">
           <input type="checkbox" checked={onlySignals} onChange={(e) => setOnlySignals(e.target.checked)} />
           Signals only
