@@ -18,27 +18,65 @@ const EXCLUDE_SYMBOLS = new Set([
   "METH", "BETH", "WBNB",
 ]);
 
+// Whole handler wrapped in one outer try/catch so literally nothing here can
+// escape as an uncaught exception — an uncaught throw in a Cloudflare Pages
+// Function makes Cloudflare serve its own opaque HTML "Bad gateway" page
+// instead of our JSON, which is indistinguishable from a real network
+// failure on the client and impossible to debug without this guard.
 export async function GET(request) {
-  const { searchParams } = new URL(request.url);
-  const perPage = Math.min(250, Math.max(10, parseInt(searchParams.get("limit"), 10) || 50));
-
-  const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=1&sparkline=false&price_change_percentage=24h`;
-
   try {
+    const { searchParams } = new URL(request.url);
+    const perPage = Math.min(250, Math.max(10, parseInt(searchParams.get("limit"), 10) || 50));
+    const debug = searchParams.get("debug") === "1";
+
+    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=1&sparkline=false&price_change_percentage=24h`;
+
+    // Reading process.env has been observed to throw in some Cloudflare Pages
+    // edge-runtime configurations depending on how the binding is wired up —
+    // guard it so a missing/misbehaving env binding never takes down the
+    // whole route.
+    let apiKey;
+    try {
+      apiKey = typeof process !== "undefined" && process.env ? process.env.COINGECKO_API_KEY : undefined;
+    } catch {
+      apiKey = undefined;
+    }
+    apiKey = typeof apiKey === "string" ? apiKey.trim() : undefined;
+
     const headers = { Accept: "application/json" };
     // Optional: set COINGECKO_API_KEY in the Cloudflare Pages environment to
-    // use a demo/pro key for a higher rate limit. Works fine without one.
-    if (process.env.COINGECKO_API_KEY) {
-      headers["x-cg-demo-api-key"] = process.env.COINGECKO_API_KEY;
+    // use a demo key for a higher rate limit. Works fine without one. Guard
+    // against stray whitespace/newlines from copy-paste, which can make
+    // fetch() throw "Invalid header value" when building the request.
+    if (apiKey && /^[\x21-\x7e]+$/.test(apiKey)) {
+      headers["x-cg-demo-api-key"] = apiKey;
     }
+
     // CoinGecko's free tier can be slow or drop connections outright for
     // requests coming from Cloudflare's IP ranges. If we let that fetch hang,
     // the Worker itself times out and Cloudflare serves its own opaque 502
     // (bypassing our try/catch below entirely, so the client never sees a
     // useful error). A hard timeout here guarantees we always fail fast and
-    // return real JSON that the scanner can fall back on.
-    const r = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return json({ error: "coingecko http " + r.status }, 502);
+    // return real JSON that the scanner can fall back on. Using
+    // AbortController + setTimeout instead of the newer AbortSignal.timeout()
+    // static method, since that method isn't reliably available in every
+    // edge runtime build.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let r;
+    try {
+      r = await fetch(url, { headers, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!r.ok) {
+      let detail;
+      if (debug) {
+        try { detail = (await r.text()).slice(0, 500); } catch {}
+      }
+      return json({ error: "coingecko http " + r.status, ...(debug ? { detail, hadKey: !!apiKey } : {}) }, 502);
+    }
     const data = await r.json();
     if (!Array.isArray(data)) return json({ error: "coingecko unexpected response" }, 502);
 
@@ -58,9 +96,9 @@ export async function GET(request) {
         chg24h: c.price_change_percentage_24h ?? null,
       });
     }
-    return json({ coins }, 200, 300);
+    return json({ coins, ...(debug ? { hadKey: !!apiKey } : {}) }, 200, 300);
   } catch (e) {
-    const reason = e && e.name === "TimeoutError" ? "coingecko timed out" : "coingecko unreachable: " + String(e);
+    const reason = e && e.name === "TimeoutError" ? "coingecko timed out" : "coingecko unreachable: " + (e && e.message ? e.message : String(e));
     return json({ error: reason }, 502);
   }
 }
