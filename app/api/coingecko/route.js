@@ -31,7 +31,13 @@ export async function GET(request) {
     if (process.env.COINGECKO_API_KEY) {
       headers["x-cg-demo-api-key"] = process.env.COINGECKO_API_KEY;
     }
-    const r = await fetch(url, { headers, cf: { cacheTtl: 300, cacheEverything: true } });
+    // CoinGecko's free tier can be slow or drop connections outright for
+    // requests coming from Cloudflare's IP ranges. If we let that fetch hang,
+    // the Worker itself times out and Cloudflare serves its own opaque 502
+    // (bypassing our try/catch below entirely, so the client never sees a
+    // useful error). A hard timeout here guarantees we always fail fast and
+    // return real JSON that the scanner can fall back on.
+    const r = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
     if (!r.ok) return json({ error: "coingecko http " + r.status }, 502);
     const data = await r.json();
     if (!Array.isArray(data)) return json({ error: "coingecko unexpected response" }, 502);
@@ -54,7 +60,8 @@ export async function GET(request) {
     }
     return json({ coins }, 200, 300);
   } catch (e) {
-    return json({ error: "coingecko unreachable: " + String(e) }, 502);
+    const reason = e && e.name === "TimeoutError" ? "coingecko timed out" : "coingecko unreachable: " + String(e);
+    return json({ error: reason }, 502);
   }
 }
 
