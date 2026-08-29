@@ -39,7 +39,7 @@ export async function GET(request) {
     const bars = [];
     for (let i = 0; i < ts.length; i++) {
       if (q.close[i] == null) continue;
-      bars.push({ t: ts[i] * 1000, o: q.open[i], h: q.high[i], l: q.low[i], c: q.close[i] });
+      bars.push({ t: ts[i] * 1000, o: q.open[i], h: q.high[i], l: q.low[i], c: q.close[i], v: q.volume ? q.volume[i] : null });
     }
     return json({ bars }, 200, 60);
   } catch (e) {

@@ -31,9 +31,15 @@ function EntryWindowPill({ status }) {
   return <span className={`pill ${w.cls}`}>{w.label}</span>;
 }
 
+const PAIRING_TABS = {
+  A: { label: "4H → 15m", title: "4H Bias → 15m Entry", higherLabel: "4H", lowerLabel: "15m" },
+  B: { label: "1H → 5m", title: "1H Bias → 5m Entry", higherLabel: "1H", lowerLabel: "5m" },
+};
+
 export default function Dashboard() {
   const [mkt, setMkt] = useState("all");
   const [onlySignals, setOnlySignals] = useState(true);
+  const [pairing, setPairing] = useState("A"); // which timeframe pairing's table is shown
   const [rowsA, setRowsA] = useState([]); // 4H bias -> 15m entry
   const [rowsB, setRowsB] = useState([]); // 1H bias -> 5m entry
   const [status, setStatus] = useState("Loading live data…");
@@ -137,31 +143,30 @@ export default function Dashboard() {
       {notice ? <div className="notice">⚠ {notice}</div> : null}
 
       <div className="notice" style={{ marginBottom: 12 }}>
-        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>. Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger: <b>4H → 15m</b> and <b>1H → 5m</b>. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering.
+        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, confirmed with <b>ADX(14) &gt; 20</b> on the bias timeframe (trending, not choppy) and <b>volume ≥ 1.5× its 20-bar average</b> on the entry candle (real participation, not a thin fakeout). Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering.
+      </div>
+
+      <div className="seg" style={{ marginBottom: 14 }}>
+        {Object.entries(PAIRING_TABS).map(([key, t]) => (
+          <button key={key} className={pairing === key ? "active" : ""} onClick={() => setPairing(key)}>
+            {t.label}
+          </button>
+        ))}
       </div>
 
       <PairingSection
-        title="4H Bias → 15m Entry"
-        rows={rowsA}
+        pairingKey={pairing}
+        title={PAIRING_TABS[pairing].title}
+        rows={pairing === "A" ? rowsA : rowsB}
         mkt={mkt}
         onlySignals={onlySignals}
         loading={loading}
-        higherLabel="4H"
-        lowerLabel="15m"
-      />
-
-      <PairingSection
-        title="1H Bias → 5m Entry"
-        rows={rowsB}
-        mkt={mkt}
-        onlySignals={onlySignals}
-        loading={loading}
-        higherLabel="1H"
-        lowerLabel="5m"
+        higherLabel={PAIRING_TABS[pairing].higherLabel}
+        lowerLabel={PAIRING_TABS[pairing].lowerLabel}
       />
 
       <div className="foot">
-        <b>How to read it:</b> <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes <i>and</i> agrees with the higher-TF bias. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the R:R column). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
+        <b>How to read it:</b> <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes, agrees with the higher-TF bias, <i>and</i> both confluence checks (ADX &gt; 20, high volume) pass. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the R:R column). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
         <br /><br />
         <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
       </div>
@@ -169,7 +174,7 @@ export default function Dashboard() {
   );
 }
 
-function PairingSection({ title, rows, mkt, onlySignals, loading, higherLabel, lowerLabel }) {
+function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, higherLabel, lowerLabel }) {
   const view = useMemo(() => {
     let r = rows.slice();
     if (mkt !== "all") r = r.filter((x) => x.mkt === mkt);
@@ -218,6 +223,8 @@ function PairingSection({ title, rows, mkt, onlySignals, loading, higherLabel, l
               <th>{lowerLabel} MSS</th>
               <th>{lowerLabel} Breaker (confirm yourself)</th>
               <th>{lowerLabel} FVG</th>
+              <th>ADX &gt; 20</th>
+              <th>Volume</th>
               <th>Entry</th>
               <th>Stop</th>
               <th>Target</th>
@@ -228,7 +235,7 @@ function PairingSection({ title, rows, mkt, onlySignals, loading, higherLabel, l
           </thead>
           <tbody>
             {view.length === 0 ? (
-              <tr><td colSpan={14} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
+              <tr><td colSpan={16} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
             ) : (
               view.map((r) => {
                 const biasCls = r.biasHigh === "long" ? "up" : r.biasHigh === "short" ? "down" : "no";
@@ -237,7 +244,7 @@ function PairingSection({ title, rows, mkt, onlySignals, loading, higherLabel, l
                   <tr key={r.symbol}>
                     <td className="left">
                       <span className={`dot ${biasCls}`} />
-                      <a className="sym-link" href={`/asset/${r.symbol}?mkt=${r.mkt}`} title={`Open ${r.symbol} structure setup & chart`}>
+                      <a className="sym-link" href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}`} title={`Open ${r.symbol} structure setup & chart`}>
                         <span className="sym">{r.symbol}</span>
                         <span className="open-ico">↗</span>
                       </a>
@@ -257,6 +264,8 @@ function PairingSection({ title, rows, mkt, onlySignals, loading, higherLabel, l
                     <td>{ck(r.checklist?.mss)}</td>
                     <td>{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</td>
                     <td>{ck(r.checklist?.fvg)}</td>
+                    <td title={r.confluence?.adx?.value != null ? `ADX ${r.confluence.adx.value.toFixed(1)}` : ""}>{ck(r.confluence?.adx?.ok)}</td>
+                    <td title={r.confluence?.volume?.ratio ? `${r.confluence.volume.ratio.toFixed(1)}× avg` : ""}>{ck(r.confluence?.volume?.ok)}</td>
                     <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
                     <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
                     <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</td>

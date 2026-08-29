@@ -58,6 +58,15 @@ function narrative(m, p) {
     parts.push(`${p.lowerLabel} has its own reversal in progress, but it's ${m.biasLow === "long" ? "bullish" : "bearish"} — opposite the ${p.higherLabel} bias, so this isn't a valid entry trigger yet.`);
   } else if (!m.checklist?.fvg) {
     parts.push(`${p.lowerLabel} is aligned with the ${p.higherLabel} bias (Sweep + MSS confirmed), but no Fair Value Gap has formed yet in the ${p.lowerLabel} reversal leg — no entry until one does.`);
+  } else if (!m.setupReady) {
+    const missing = [];
+    if (!m.confluence?.adx?.ok) {
+      missing.push(`${p.higherLabel} trend strength (ADX ${m.confluence?.adx?.value != null ? m.confluence.adx.value.toFixed(1) : "n/a"}, needs > 20)`);
+    }
+    if (!m.confluence?.volume?.ok) {
+      missing.push(`${p.lowerLabel} volume confirmation (${m.confluence?.volume?.ratio ? `${m.confluence.volume.ratio.toFixed(1)}× its 20-bar average, needs ≥ 1.5×` : "no volume data available"})`);
+    }
+    parts.push(`${p.lowerLabel} checklist is complete — Sweep → MSS → FVG all confirmed — but confluence isn't there yet: ${missing.join(" and ")}. No entry until that clears.`);
   } else {
     const targetNote = m.targetSource === "poi"
       ? `target ${fmt(m.target, m.symbol)} at the next unswept swing (POI) on the ${p.higherLabel}`
@@ -75,8 +84,8 @@ function narrative(m, p) {
   return parts.join(" ");
 }
 
-export default function AssetDetail({ symbol, mkt }) {
-  const [pairing, setPairing] = useState("A"); // "A": 4H->15m, "B": 1H->5m
+export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
+  const [pairing, setPairing] = useState(initialPairing); // "A": 4H->15m, "B": 1H->5m — set from the scanner tab that was clicked
   const [chartView, setChartView] = useState("lower"); // "lower" (entry) | "higher" (bias)
   const [results, setResults] = useState(null); // { A: {...}, B: {...} }
   const [bars, setBars] = useState(null); // { "4h", "1h", "15m", "5m" }
@@ -176,6 +185,16 @@ export default function AssetDetail({ symbol, mkt }) {
               <Stat label={`${p.lowerLabel} / ${p.higherLabel} Aligned`} value={m.biasLow ? (m.aligned ? "✓ yes" : "✗ no") : "—"} cls={m.aligned ? biasClass : m.biasLow ? "short" : ""} />
               <Stat label={`${p.lowerLabel} Breaker Block`} value={m.breaker ? `candidate: candle ${m.breaker.index}` : "—"} />
               <Stat label={`${p.lowerLabel} Fair Value Gap`} value={m.checklist?.fvg ? "✓ found" : "—"} cls={m.checklist?.fvg ? biasClass : ""} />
+              <Stat
+                label={`${p.higherLabel} Trend Strength (ADX)`}
+                value={m.confluence?.adx?.value != null ? `${m.confluence.adx.value.toFixed(1)}${m.confluence.adx.ok ? " ✓ >20" : " ✗ ≤20"}` : "—"}
+                cls={m.confluence?.adx?.ok ? "long" : m.confluence?.adx?.value != null ? "short" : ""}
+              />
+              <Stat
+                label={`${p.lowerLabel} Volume Confirmation`}
+                value={m.confluence?.volume?.ratio ? `${m.confluence.volume.ratio.toFixed(1)}× avg${m.confluence.volume.ok ? " ✓" : " ✗"}` : "— (no volume data)"}
+                cls={m.confluence?.volume?.ok ? "long" : m.confluence?.volume?.ratio ? "short" : ""}
+              />
               <Stat label="Entry" value={m.setupReady ? fmt(m.entry, symbol) : "—"} />
               <Stat label={`Stop (${p.lowerLabel} sweep extreme)`} value={m.setupReady ? fmt(m.stop, symbol) : "—"} cls="short" />
               <Stat label={`Target (${m.targetSource === "poi" ? `${p.higherLabel} POI` : "fixed 1:2"})`} value={m.setupReady ? fmt(m.target, symbol) : "—"} cls="long" />
