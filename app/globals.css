@@ -72,6 +72,7 @@ td.empty{text-align:center;color:var(--muted);padding:30px}
 .long{color:var(--long);background:var(--long-bg)}
 .short{color:var(--short);background:var(--short-bg)}
 .flat{color:var(--muted);background:var(--chip)}
+.warn{color:var(--warn);background:rgba(242,177,60,.14)}
 .volHigh{color:var(--warn);font-weight:700}
 .volMed{color:var(--txt)}
 .volLow{color:var(--muted)}
@@ -115,9 +116,16 @@ td.empty{text-align:center;color:var(--muted);padding:30px}
 .stat-v{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:3px}
 .long-txt{color:var(--long)}.short-txt{color:var(--short)}.flat-txt{color:var(--muted)}.warn-txt{color:var(--warn)}
 
-.chart-panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;margin-bottom:16px}
+.chart-panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;margin-bottom:16px;overflow:hidden}
 .tvchart{width:100%;border-radius:8px;overflow:hidden}
 .chart-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:14px;align-items:start}
 .chart-grid .chart-panel{margin-bottom:0}
-.chart-grid .idea-h{padding:6px 8px 0}
 @media(max-width:980px){.chart-grid{grid-template-columns:1fr}}
+
+.pos-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 8px 10px}
+.pos-head .lbl{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+.pos-badge{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:700;
+  padding:3px 9px;border-radius:999px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pos-badge.entry{background:rgba(242,177,60,.14);color:var(--warn)}
+.pos-badge.stop{background:var(--short-bg);color:var(--short)}
+.pos-badge.target{background:var(--long-bg);color:var(--long)}

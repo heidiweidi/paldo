@@ -28,6 +28,21 @@ function fmt(n, sym) {
   return n.toLocaleString(undefined, { minimumFractionDigits: dp > 4 ? 2 : dp, maximumFractionDigits: dp });
 }
 
+// Is this setup still catchable, or has price already moved on? See
+// entryWindowStatus() in lib/indicators.js for how each status is derived.
+const ENTRY_WINDOW = {
+  in_zone: { cls: "long", label: "✓ In zone — price has pulled back to entry" },
+  running: { cls: "warn", label: "Running — already past entry, no pullback yet" },
+  reached: { cls: "flat", label: "Target already reached" },
+  invalidated: { cls: "short", label: "✗ Invalidated — stop already hit" },
+};
+const ENTRY_WINDOW_NOTE = {
+  in_zone: "Price is currently sitting in the entry zone — this is your window.",
+  running: "Price already ran past entry without pulling back — chasing it now means worse risk/reward than planned.",
+  reached: "Price has already reached the target — this one's played out.",
+  invalidated: "Price has already traded through the stop — this setup is dead, don't chase it.",
+};
+
 // Plain-English readout: higher-TF bias for context, lower-TF checklist as the entry trigger.
 function narrative(m, p) {
   if (!m) return "";
@@ -50,6 +65,7 @@ function narrative(m, p) {
     parts.push(
       `${p.lowerLabel} is aligned and complete: Sweep → MSS → FVG all confirmed, ${m.barsAgo != null ? `${m.barsAgo} bar(s) since the ${p.lowerLabel} MSS` : ""}. Entry sits mid-gap at ${fmt(m.entry, m.symbol)}, stop beyond the ${p.lowerLabel} sweep at ${fmt(m.stop, m.symbol)}, ${targetNote} — a ${m.rr.toFixed(1)}:1 reward-to-risk.`
     );
+    parts.push(ENTRY_WINDOW_NOTE[m.entryWindow] || "");
   }
 
   if (m.breaker) {
@@ -165,6 +181,14 @@ export default function AssetDetail({ symbol, mkt }) {
               <Stat label={`Target (${m.targetSource === "poi" ? `${p.higherLabel} POI` : "fixed 1:2"})`} value={m.setupReady ? fmt(m.target, symbol) : "—"} cls="long" />
               <Stat label="Reward : Risk" value={m.setupReady ? `${m.rr.toFixed(1)} : 1` : "—"} />
               <Stat label={`Bars since ${p.lowerLabel} MSS`} value={m.barsAgo != null ? String(m.barsAgo) : "—"} />
+              <div style={{ gridColumn: "1 / -1" }}>
+                <div className="stat-k">Still catchable?</div>
+                <div className="stat-v" style={{ marginTop: 5 }}>
+                  {m.setupReady ? (
+                    <span className={`pill ${ENTRY_WINDOW[m.entryWindow]?.cls || "flat"}`}>{ENTRY_WINDOW[m.entryWindow]?.label || "—"}</span>
+                  ) : "—"}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -174,10 +198,11 @@ export default function AssetDetail({ symbol, mkt }) {
             </div>
             {m.setupReady ? (
               <div className="chart-panel">
-                <div className="idea-h">
-                  Position ({p.lowerLabel}) — entry <span className="warn-txt">{fmt(m.entry, symbol)}</span>
-                  {" · "}stop <span className="short-txt">{fmt(m.stop, symbol)}</span>
-                  {" · "}target <span className="long-txt">{fmt(m.target, symbol)}</span>
+                <div className="pos-head">
+                  <span className="lbl">Position ({p.lowerLabel})</span>
+                  <span className="pos-badge entry">Entry {fmt(m.entry, symbol)}</span>
+                  <span className="pos-badge stop">Stop {fmt(m.stop, symbol)}</span>
+                  <span className="pos-badge target">Target {fmt(m.target, symbol)}</span>
                 </div>
                 <PositionChart bars={bars ? bars[p.lower] : null} entry={m.entry} stop={m.stop} target={m.target} />
               </div>

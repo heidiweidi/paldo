@@ -17,6 +17,20 @@ function fmt(n, sym) {
   return n.toLocaleString(undefined, { minimumFractionDigits: dp > 4 ? 2 : dp, maximumFractionDigits: dp });
 }
 
+// Is this setup still catchable, or has price already moved on? See
+// entryWindowStatus() in lib/indicators.js for how each status is derived.
+const ENTRY_WINDOW = {
+  in_zone: { cls: "long", label: "✓ In zone" },
+  running: { cls: "warn", label: "Running — past entry" },
+  reached: { cls: "flat", label: "Target reached" },
+  invalidated: { cls: "short", label: "✗ Invalidated" },
+};
+function EntryWindowPill({ status }) {
+  const w = ENTRY_WINDOW[status];
+  if (!w) return <span className="pill flat">—</span>;
+  return <span className={`pill ${w.cls}`}>{w.label}</span>;
+}
+
 export default function Dashboard() {
   const [mkt, setMkt] = useState("all");
   const [onlySignals, setOnlySignals] = useState(true);
@@ -147,7 +161,7 @@ export default function Dashboard() {
       />
 
       <div className="foot">
-        <b>How to read it:</b> <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes <i>and</i> agrees with the higher-TF bias. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the R:R column). Breaker Block is always a candidate to check yourself, never auto-confirmed.
+        <b>How to read it:</b> <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes <i>and</i> agrees with the higher-TF bias. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the R:R column). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
         <br /><br />
         <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
       </div>
@@ -209,11 +223,12 @@ function PairingSection({ title, rows, mkt, onlySignals, loading, higherLabel, l
               <th>Target</th>
               <th>R:R</th>
               <th>Bars since {lowerLabel} MSS</th>
+              <th>Still catchable?</th>
             </tr>
           </thead>
           <tbody>
             {view.length === 0 ? (
-              <tr><td colSpan={13} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
+              <tr><td colSpan={14} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
             ) : (
               view.map((r) => {
                 const biasCls = r.biasHigh === "long" ? "up" : r.biasHigh === "short" ? "down" : "no";
@@ -247,6 +262,7 @@ function PairingSection({ title, rows, mkt, onlySignals, loading, higherLabel, l
                     <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</td>
                     <td className="num rr">{r.setupReady ? `${r.rr.toFixed(1)}:1` : "—"}</td>
                     <td className="num">{r.barsAgo != null ? r.barsAgo : "—"}</td>
+                    <td>{r.setupReady ? <EntryWindowPill status={r.entryWindow} /> : "—"}</td>
                   </tr>
                 );
               })

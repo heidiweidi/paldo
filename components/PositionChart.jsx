@@ -33,6 +33,13 @@ export default function PositionChart({ bars, entry, stop, target, height = 320 
     const series = chart.addSeries(CandlestickSeries, {
       upColor: LONG, downColor: SHORT, borderVisible: false,
       wickUpColor: LONG, wickDownColor: SHORT,
+      // The library's own "last price" line/label sits on the price axis just
+      // like our Entry/Stop/Target lines do — when the current price lands
+      // close to one of those (a tight stop especially), its label collides
+      // with ours. We already show current price elsewhere on the page, so
+      // turn off the built-in one here to stop that overlap.
+      lastValueVisible: false,
+      priceLineVisible: false,
     });
 
     const data = bars
