@@ -7,7 +7,6 @@ import { analyzeMTF, to4h } from "@/lib/indicators";
 import { tvSymbol, TV_INTERVAL, tvUrl } from "@/lib/symbols";
 import TradingViewChart from "@/components/TradingViewChart";
 import PositionChart from "@/components/PositionChart";
-import StrategyDiagram from "@/components/StrategyDiagram";
 
 const PLAIN_STUDIES = []; // stable reference — avoids re-mounting the chart every render
 
@@ -193,22 +192,55 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
 
       {m && state === "ok" ? (
         <>
-          <div className="idea-grid">
-            <div className="idea-card">
-              <div className="idea-h">Structure setup — {p.title}</div>
-              <p className="idea-text">{idea}</p>
-              <a className="tv-ext" href={tvUrl(mkt, symbol, chartTf)} target="_blank" rel="noreferrer">
-                Open full chart on TradingView ↗
-              </a>
-              <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
-                <div className="idea-h">What this pattern looks like</div>
-                <StrategyDiagram />
-                <p style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.5, margin: "8px 0 0" }}>
-                  Generic illustration of the checklist above, not {symbol}'s actual chart: price sweeps a swing low (①), reverses and closes back above the prior structure level (② MSS), the last opposite-colored candle before that break is the Breaker Block candidate (③) to confirm yourself, price leaves a Fair Value Gap on the way up (④), and entry/stop/target are sized so the reward is roughly double the risk (⑤). A bearish setup is the same shape mirrored upside-down.
-                </p>
+          <div className="chart-panel" style={{ marginBottom: 16 }}>
+            <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[chartTf]} studies={PLAIN_STUDIES} />
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <div className="idea-h">Structure setup — {p.title}</div>
+            <p className="idea-text" style={{ marginBottom: 6 }}>{idea}</p>
+            <a className="tv-ext" href={tvUrl(mkt, symbol, chartTf)} target="_blank" rel="noreferrer">
+              Open full chart on TradingView ↗
+            </a>
+          </div>
+
+          <div className="three-col">
+            <div className="chart-panel">
+              <div className="pos-head">
+                <span className="lbl">Position ({p.lowerLabel}) — entry idea</span>
+                {m.setupReady ? (
+                  <>
+                    <span className="pos-badge entry">Entry {fmt(m.entry, symbol)}</span>
+                    <span className="pos-badge stop">Stop {fmt(m.stop, symbol)}</span>
+                    <span className="pos-badge target">Target {fmt(m.target, symbol)}</span>
+                  </>
+                ) : (
+                  <small style={{ color: "var(--muted)" }}>checklist not complete yet</small>
+                )}
+              </div>
+              <PositionChart
+                bars={bars ? bars[p.lower] : null}
+                entry={m.entry}
+                stop={m.stop}
+                target={m.target}
+                sweepLevel={m.sweepLevel}
+                mssLevel={m.mssLevel}
+                fvgZone={m.fvgZone}
+                breaker={m.breaker}
+                height={360}
+              />
+              <div className="chart-legend">
+                <span><i className="sw" style={{ background: "var(--warn)" }} />Entry</span>
+                <span><i className="sw" style={{ background: "var(--short)" }} />Stop</span>
+                <span><i className="sw" style={{ background: "var(--long)" }} />Target</span>
+                <span><i className="sw" style={{ background: "var(--muted)" }} />Liquidity Sweep</span>
+                <span><i className="sw" style={{ background: "var(--accent)" }} />MSS</span>
+                <span><i className="sw" style={{ background: "rgba(76,141,255,.4)" }} />FVG zone</span>
+                <span><i className="sw" style={{ background: "var(--txt)" }} />Breaker Block</span>
               </div>
             </div>
-            <div className="stats-card">
+
+            <div className="stats-card col-half">
               <Stat label={`${p.higherLabel} Bias`} value={m.biasHigh ? (m.biasHigh === "long" ? "Bullish" : "Bearish") : "—"} cls={biasClass} />
               <Stat label={`${p.lowerLabel} Sweep`} value={m.checklist?.sweep ? "✓ confirmed" : "—"} cls={m.checklist?.sweep ? biasClass : ""} />
               <Stat label={`${p.lowerLabel} Market Structure Shift`} value={m.checklist?.mss ? "✓ confirmed" : "—"} cls={m.checklist?.mss ? biasClass : ""} />
@@ -225,12 +257,15 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
                 value={m.confluence?.volume?.ratio ? `${m.confluence.volume.ratio.toFixed(1)}× avg${m.confluence.volume.ok ? " ✓" : " ✗"}` : "— (no volume data)"}
                 cls={m.confluence?.volume?.ok ? "long" : m.confluence?.volume?.ratio ? "short" : ""}
               />
+            </div>
+
+            <div className="stats-card col-half">
               <Stat label="Entry" value={m.setupReady ? fmt(m.entry, symbol) : "—"} />
               <Stat label={`Stop (${p.lowerLabel} sweep extreme)`} value={m.setupReady ? fmt(m.stop, symbol) : "—"} cls="short" />
               <Stat label={`Target (${m.targetSource === "poi" ? `${p.higherLabel} POI` : "fixed 1:2"})`} value={m.setupReady ? fmt(m.target, symbol) : "—"} cls="long" />
               <Stat label="Reward : Risk" value={m.setupReady ? `${m.rr.toFixed(1)} : 1` : "—"} />
               <Stat label={`Bars since ${p.lowerLabel} MSS`} value={m.barsAgo != null ? String(m.barsAgo) : "—"} />
-              <div style={{ gridColumn: "1 / -1" }}>
+              <div>
                 <div className="stat-k">Still catchable?</div>
                 <div className="stat-v" style={{ marginTop: 5 }}>
                   {m.setupReady ? (
@@ -239,23 +274,6 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
                 </div>
               </div>
             </div>
-          </div>
-
-          <div className="chart-grid">
-            <div className="chart-panel">
-              <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[chartTf]} studies={PLAIN_STUDIES} />
-            </div>
-            {m.setupReady ? (
-              <div className="chart-panel">
-                <div className="pos-head">
-                  <span className="lbl">Position ({p.lowerLabel})</span>
-                  <span className="pos-badge entry">Entry {fmt(m.entry, symbol)}</span>
-                  <span className="pos-badge stop">Stop {fmt(m.stop, symbol)}</span>
-                  <span className="pos-badge target">Target {fmt(m.target, symbol)}</span>
-                </div>
-                <PositionChart bars={bars ? bars[p.lower] : null} entry={m.entry} stop={m.stop} target={m.target} />
-              </div>
-            ) : null}
           </div>
         </>
       ) : null}

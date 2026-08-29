@@ -263,6 +263,8 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
               <th style={{ width: 28 }}></th>
               <th>Asset</th>
               <th>Price</th>
+              <th>Chg%</th>
+              <th>{higherLabel} Bias</th>
               <th>Entry</th>
               <th>Stop</th>
               <th>Target</th>
@@ -270,7 +272,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
           </thead>
           <tbody>
             {view.length === 0 ? (
-              <tr><td colSpan={6} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
+              <tr><td colSpan={8} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
             ) : (
               view.map((r) => {
                 const biasCls = r.biasHigh === "long" ? "up" : r.biasHigh === "short" ? "down" : "no";
@@ -328,6 +330,12 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
           <span className="mk">{r.mkt === "crypto" ? "CRYPTO" : "FX"}</span>
         </td>
         <td className="num">{fmt(r.price, r.symbol)}</td>
+        <td className="num" style={{ color: r.chg >= 0 ? "var(--long)" : "var(--short)" }}>{r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%</td>
+        <td>
+          {r.biasHigh === "long" ? <span className="pill long">▲ BULL</span>
+            : r.biasHigh === "short" ? <span className="pill short">▼ BEAR</span>
+            : <span className="pill flat">—</span>}
+        </td>
         <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
         <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
         <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</td>
@@ -335,52 +343,80 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
       {isOpen ? (
         <tr className="expand-row">
           <td></td>
-          <td colSpan={5} style={{ whiteSpace: "normal", verticalAlign: "top" }}>
-            <div className="stats-card" style={{ border: "none", padding: "4px 0 12px", background: "transparent" }}>
-              <div className="stat">
-                <div className="stat-k">Chg%</div>
-                <div className="stat-v" style={{ color: r.chg >= 0 ? "var(--long)" : "var(--short)" }}>{r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%</div>
-              </div>
-              <div className="stat">
-                <div className="stat-k">{higherLabel} Bias</div>
-                <div className="stat-v">
-                  {r.biasHigh === "long" ? <span className="pill long">▲ BULL</span>
-                    : r.biasHigh === "short" ? <span className="pill short">▼ BEAR</span>
-                    : <span className="pill flat">—</span>}
-                  {r.biasHigh && !r.aligned ? <small style={{ marginLeft: 6, color: "var(--muted)" }}>{lowerLabel} not aligned</small> : null}
-                </div>
-              </div>
-              <div className="stat"><div className="stat-k">{lowerLabel} Sweep</div><div className="stat-v">{ck(r.checklist?.sweep)}</div></div>
-              <div className="stat"><div className="stat-k">{lowerLabel} MSS</div><div className="stat-v">{ck(r.checklist?.mss)}</div></div>
-              <div className="stat">
-                <div className="stat-k">{lowerLabel} Breaker (confirm yourself)</div>
-                <div className="stat-v">{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</div>
-              </div>
-              <div className="stat"><div className="stat-k">{lowerLabel} FVG</div><div className="stat-v">{ck(r.checklist?.fvg)}</div></div>
-              <div className="stat">
-                <div className="stat-k">ADX (gates readiness)</div>
-                <div className="stat-v" title={r.confluence?.adx?.value != null ? `ADX ${r.confluence.adx.value.toFixed(1)} (need > ${r.confluence.adx.threshold})` : ""}>{ck(r.confluence?.adx?.ok)}</div>
-              </div>
-              <div className="stat">
-                <div className="stat-k">MSS Volume (info only)</div>
-                <div className="stat-v" title={r.confluence?.volume?.ratio ? `${r.confluence.volume.ratio.toFixed(1)}× avg on the MSS candle` : ""}>{ck(r.confluence?.volume?.ok)}</div>
-              </div>
-              <div className="stat"><div className="stat-k">R:R</div><div className="stat-v rr">{r.setupReady ? `${r.rr.toFixed(1)}:1` : "—"}</div></div>
-              <div className="stat"><div className="stat-k">Bars since {lowerLabel} MSS</div><div className="stat-v">{r.barsAgo != null ? r.barsAgo : "—"}</div></div>
-              <div className="stat"><div className="stat-k">Still catchable?</div><div className="stat-v">{r.setupReady ? <EntryWindowPill status={r.entryWindow} /> : "—"}</div></div>
-            </div>
-
-            {r.setupReady && lowerBars ? (
-              <div className="chart-panel" style={{ marginTop: 4, marginBottom: 12 }}>
+          <td colSpan={7} style={{ whiteSpace: "normal", verticalAlign: "top" }}>
+            <div className="three-col" style={{ padding: "8px 0 14px" }}>
+              <div className="chart-panel" style={{ margin: 0 }}>
                 <div className="pos-head">
-                  <span className="lbl">Position ({lowerLabel})</span>
-                  <span className="pos-badge entry">Entry {fmt(r.entry, r.symbol)}</span>
-                  <span className="pos-badge stop">Stop {fmt(r.stop, r.symbol)}</span>
-                  <span className="pos-badge target">Target {fmt(r.target, r.symbol)}</span>
+                  <span className="lbl">Position ({lowerLabel}) — entry idea</span>
+                  {r.setupReady ? (
+                    <>
+                      <span className="pos-badge entry">Entry {fmt(r.entry, r.symbol)}</span>
+                      <span className="pos-badge stop">Stop {fmt(r.stop, r.symbol)}</span>
+                      <span className="pos-badge target">Target {fmt(r.target, r.symbol)}</span>
+                    </>
+                  ) : (
+                    <small style={{ color: "var(--muted)" }}>checklist not complete yet</small>
+                  )}
                 </div>
-                <PositionChart bars={lowerBars} entry={r.entry} stop={r.stop} target={r.target} height={220} />
+                {lowerBars ? (
+                  <PositionChart
+                    bars={lowerBars}
+                    entry={r.entry}
+                    stop={r.stop}
+                    target={r.target}
+                    sweepLevel={r.sweepLevel}
+                    mssLevel={r.mssLevel}
+                    fvgZone={r.fvgZone}
+                    breaker={r.breaker}
+                    height={240}
+                  />
+                ) : (
+                  <div style={{ padding: 30, textAlign: "center", color: "var(--muted)", fontSize: 13 }}>Loading chart…</div>
+                )}
+                <div className="chart-legend">
+                  <span><i className="sw" style={{ background: "var(--warn)" }} />Entry</span>
+                  <span><i className="sw" style={{ background: "var(--short)" }} />Stop</span>
+                  <span><i className="sw" style={{ background: "var(--long)" }} />Target</span>
+                  <span><i className="sw" style={{ background: "var(--muted)" }} />Sweep</span>
+                  <span><i className="sw" style={{ background: "var(--accent)" }} />MSS</span>
+                  <span><i className="sw" style={{ background: "rgba(76,141,255,.4)" }} />FVG</span>
+                </div>
               </div>
-            ) : null}
+
+              <div className="stats-card col-half">
+                <div className="stat">
+                  <div className="stat-k">{lowerLabel} / {higherLabel} Aligned</div>
+                  <div className="stat-v">
+                    {r.biasLow ? (r.aligned ? "✓ yes" : "✗ no") : "—"}
+                    {r.biasHigh && !r.aligned ? <small style={{ marginLeft: 6, color: "var(--muted)" }}>{lowerLabel} not aligned</small> : null}
+                  </div>
+                </div>
+                <div className="stat"><div className="stat-k">{lowerLabel} Sweep</div><div className="stat-v">{ck(r.checklist?.sweep)}</div></div>
+                <div className="stat"><div className="stat-k">{lowerLabel} MSS</div><div className="stat-v">{ck(r.checklist?.mss)}</div></div>
+                <div className="stat">
+                  <div className="stat-k">{lowerLabel} Breaker (confirm yourself)</div>
+                  <div className="stat-v">{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</div>
+                </div>
+                <div className="stat"><div className="stat-k">{lowerLabel} FVG</div><div className="stat-v">{ck(r.checklist?.fvg)}</div></div>
+                <div className="stat">
+                  <div className="stat-k">ADX (gates readiness)</div>
+                  <div className="stat-v" title={r.confluence?.adx?.value != null ? `ADX ${r.confluence.adx.value.toFixed(1)} (need > ${r.confluence.adx.threshold})` : ""}>{ck(r.confluence?.adx?.ok)}</div>
+                </div>
+                <div className="stat">
+                  <div className="stat-k">MSS Volume (info only)</div>
+                  <div className="stat-v" title={r.confluence?.volume?.ratio ? `${r.confluence.volume.ratio.toFixed(1)}× avg on the MSS candle` : ""}>{ck(r.confluence?.volume?.ok)}</div>
+                </div>
+              </div>
+
+              <div className="stats-card col-half">
+                <div className="stat"><div className="stat-k">Entry</div><div className="stat-v">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</div></div>
+                <div className="stat"><div className="stat-k">Stop</div><div className="stat-v short-txt">{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</div></div>
+                <div className="stat"><div className="stat-k">Target</div><div className="stat-v long-txt">{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</div></div>
+                <div className="stat"><div className="stat-k">R:R</div><div className="stat-v rr">{r.setupReady ? `${r.rr.toFixed(1)}:1` : "—"}</div></div>
+                <div className="stat"><div className="stat-k">Bars since {lowerLabel} MSS</div><div className="stat-v">{r.barsAgo != null ? r.barsAgo : "—"}</div></div>
+                <div className="stat"><div className="stat-k">Still catchable?</div><div className="stat-v">{r.setupReady ? <EntryWindowPill status={r.entryWindow} /> : "—"}</div></div>
+              </div>
+            </div>
           </td>
         </tr>
       ) : null}
