@@ -3,12 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { FOREX } from "@/lib/universe";
-import { analyzeMTF, to4h } from "@/lib/indicators";
+import { analyzeMTF, to4h, STRATEGIES } from "@/lib/indicators";
 import { tvSymbol, TV_INTERVAL, tvUrl } from "@/lib/symbols";
 import TradingViewChart from "@/components/TradingViewChart";
 import PositionChart from "@/components/PositionChart";
 
-const PLAIN_STUDIES = []; // stable reference — avoids re-mounting the chart every render
+const STRAT = STRATEGIES.strat5;
+// Stochastic RSI + MACD in their own panes; volume is hidden in the widget
+// config. Module-scope constant so the chart isn't re-mounted every render.
+const STUDIES = ["StochasticRSI@tv-basicstudies", "MACD@tv-basicstudies"];
 
 const PAIRINGS = {
   A: { higher: "4h", lower: "15m", higherLabel: "4H", lowerLabel: "15m", title: "4H Bias → 15m Entry" },
@@ -58,15 +61,6 @@ function narrative(m, p) {
     parts.push(`${p.lowerLabel} has its own reversal in progress, but it's ${m.biasLow === "long" ? "bullish" : "bearish"} — opposite the ${p.higherLabel} bias, so this isn't a valid entry trigger yet.`);
   } else if (!m.checklist?.fvg) {
     parts.push(`${p.lowerLabel} is aligned with the ${p.higherLabel} bias (Sweep + MSS confirmed), but no Fair Value Gap has formed yet in the ${p.lowerLabel} reversal leg — no entry until one does.`);
-  } else if (!m.setupReady) {
-    const missing = [];
-    if (!m.confluence?.adx?.ok) {
-      missing.push(`${p.higherLabel} trend strength (ADX ${m.confluence?.adx?.value != null ? m.confluence.adx.value.toFixed(1) : "n/a"}, needs > ${m.confluence?.adx?.threshold ?? 0})`);
-    }
-    if (!m.confluence?.volume?.ok) {
-      missing.push(`volume on the ${p.lowerLabel} MSS candle (${m.confluence?.volume?.ratio ? `${m.confluence.volume.ratio.toFixed(1)}× its own trailing average, needs ≥ 1.5×` : "no volume data available"})`);
-    }
-    parts.push(`${p.lowerLabel} checklist is complete — Sweep → MSS → FVG all confirmed — but confluence isn't there yet: ${missing.join(" and ")}. No entry until that clears.`);
   } else {
     const targetNote = m.targetSource === "poi"
       ? `target ${fmt(m.target, m.symbol)} at the next unswept swing (POI) on the ${p.higherLabel}`
@@ -84,12 +78,9 @@ function narrative(m, p) {
   return parts.join(" ");
 }
 
-const ADX_MAX = 50;
-
-export default function AssetDetail({ symbol, mkt, initialPairing = "A", initialAdxMin = 0 }) {
+export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
   const [pairing, setPairing] = useState(initialPairing); // "A": 4H->15m, "B": 1H->5m — set from the scanner tab that was clicked
   const [chartView, setChartView] = useState("lower"); // "lower" (entry) | "higher" (bias)
-  const [adxMin, setAdxMin] = useState(initialAdxMin); // adjustable ADX confluence threshold, carried over from the scanner's slider
   const [bars, setBars] = useState(null); // { "4h", "1h", "15m", "5m" }
   const [state, setState] = useState("loading"); // loading | ok | error
 
@@ -128,14 +119,16 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
 
   useEffect(() => { load(); }, [load]);
 
-  // Re-scored from the fetched bars whenever the ADX slider moves — no re-fetch.
+  // Both pairings scored with filters left off — on a single-asset page the
+  // point is to see the actual ADX/Volatility/Volume readings, not to have
+  // them hide the setup. Filtering is the scanner's job.
   const results = useMemo(() => {
     if (!bars) return null;
     return {
-      A: analyzeMTF(symbol, mkt, bars["4h"], bars["15m"], adxMin),
-      B: analyzeMTF(symbol, mkt, bars["1h"], bars["5m"], adxMin),
+      A: analyzeMTF(symbol, mkt, bars["4h"], bars["15m"]),
+      B: analyzeMTF(symbol, mkt, bars["1h"], bars["5m"]),
     };
-  }, [bars, symbol, mkt, adxMin]);
+  }, [bars, symbol, mkt]);
 
   const p = PAIRINGS[pairing];
   const m = results ? results[pairing] : null;
@@ -158,18 +151,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
           <button className={chartView === "lower" ? "active" : ""} onClick={() => setChartView("lower")}>{p.lowerLabel} (entry)</button>
           <button className={chartView === "higher" ? "active" : ""} onClick={() => setChartView("higher")}>{p.higherLabel} (bias)</button>
         </div>
-        <label className="ck" style={{ gap: 8, marginLeft: "auto" }}>
-          ADX filter &gt; {adxMin}
-          <input
-            type="range"
-            min={0}
-            max={ADX_MAX}
-            step={1}
-            value={adxMin}
-            onChange={(e) => setAdxMin(Number(e.target.value))}
-            style={{ width: 120 }}
-          />
-        </label>
+        <span className="filter-title" style={{ marginLeft: "auto" }}>{STRAT.name}</span>
       </div>
 
       <div className="detail-title">
@@ -193,11 +175,11 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
       {m && state === "ok" ? (
         <>
           <div className="chart-panel" style={{ marginBottom: 16 }}>
-            <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[chartTf]} studies={PLAIN_STUDIES} />
+            <TradingViewChart symbol={tvSym} interval={TV_INTERVAL[chartTf]} studies={STUDIES} />
           </div>
 
           <div style={{ marginBottom: 16 }}>
-            <div className="idea-h">Structure setup — {p.title}</div>
+            <div className="idea-h">{STRAT.title} — {p.title}</div>
             <p className="idea-text" style={{ marginBottom: 6 }}>{idea}</p>
             <a className="tv-ext" href={tvUrl(mkt, symbol, chartTf)} target="_blank" rel="noreferrer">
               Open full chart on TradingView ↗
@@ -248,14 +230,16 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
               <Stat label={`${p.lowerLabel} Breaker Block`} value={m.breaker ? `candidate: candle ${m.breaker.index}` : "—"} />
               <Stat label={`${p.lowerLabel} Fair Value Gap`} value={m.checklist?.fvg ? "✓ found" : "—"} cls={m.checklist?.fvg ? biasClass : ""} />
               <Stat
-                label={`${p.higherLabel} Trend Strength (ADX > ${adxMin})`}
-                value={m.confluence?.adx?.value != null ? `${m.confluence.adx.value.toFixed(1)}${m.confluence.adx.ok ? " ✓" : " ✗"}` : "—"}
-                cls={m.confluence?.adx?.ok ? "long" : m.confluence?.adx?.value != null ? "short" : ""}
+                label={`${p.higherLabel} Trend Strength (ADX)`}
+                value={m.filters?.adx?.value != null ? m.filters.adx.value.toFixed(1) : "—"}
+              />
+              <Stat
+                label={`${p.higherLabel} Volatility (ATR%)`}
+                value={m.filters?.volatility?.value != null ? `${m.filters.volatility.value.toFixed(2)}%` : "—"}
               />
               <Stat
                 label={`${p.lowerLabel} MSS Candle Volume`}
-                value={m.confluence?.volume?.ratio ? `${m.confluence.volume.ratio.toFixed(1)}× avg${m.confluence.volume.ok ? " ✓" : " ✗"}` : "— (no volume data)"}
-                cls={m.confluence?.volume?.ok ? "long" : m.confluence?.volume?.ratio ? "short" : ""}
+                value={m.filters?.volume?.value != null ? `${m.filters.volume.value.toFixed(1)}× avg` : "— (no volume data)"}
               />
             </div>
 
@@ -279,7 +263,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A", initial
       ) : null}
 
       <div className="foot">
-        Chart is plain price action on purpose — Liquidity Sweep, MSS, and FVG are computed from the data above; Breaker Block is a candidate only. Confirm the Breaker Block, and the overall pattern, visually before acting. Target is the next unswept swing on the {p.higherLabel} ahead of price, or a fixed 1:2 risk/reward when no such level exists yet.{" "}
+        <b>{STRAT.name}</b> — {STRAT.short}, entry sized to 1:2 R:R. Liquidity Sweep, MSS, and FVG are computed from the data above; Breaker Block is a candidate only — confirm it, and the overall pattern, visually before acting. ADX, Volatility and Volume are shown here purely as context: they're optional filters in the scanner and never decide whether a setup exists. The price pane is left unobstructed for reading structure, with Stochastic RSI and MACD in panes below. Target is the next unswept swing on the {p.higherLabel} ahead of price, or a fixed 1:2 risk/reward when no such level exists yet.{" "}
         Educational signal simulation on live public data — <b>not financial advice</b>. Confirm on the chart before acting.
       </div>
     </div>

@@ -50,6 +50,25 @@ label.ck{display:inline-flex;gap:6px;align-items:center;color:var(--muted);font-
 .notice{background:rgba(242,177,60,.1);border:1px solid rgba(242,177,60,.35);color:#f2c876;
   padding:10px 14px;border-radius:10px;margin-bottom:14px;font-size:13px}
 
+/* optional screening filters — visually separate from the strategy itself */
+.filterbar{background:var(--panel2);border:1px solid var(--line);border-radius:12px;
+  padding:10px 14px 12px;margin-bottom:14px}
+.filterbar-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:9px}
+.filter-title{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--txt);font-weight:650}
+.filter-sub{font-size:12px;color:var(--muted)}
+.filter-row{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center}
+.filter-chip{display:inline-flex;align-items:center;gap:8px;background:var(--panel);
+  border:1px solid var(--line);border-radius:9px;padding:6px 10px}
+.filter-chip.on{border-color:var(--accent);background:rgba(76,141,255,.08)}
+.filter-chip label.ck{color:var(--txt);font-weight:600;font-size:12.5px}
+.filter-chip input[type=range]{accent-color:var(--accent)}
+.filter-chip input[type=range]:disabled{opacity:.4}
+.filter-val{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;min-width:52px}
+.filter-chip.on .filter-val{color:var(--accent);font-weight:650}
+.filter-hidden{font-size:12px;color:var(--warn)}
+.filter-tag{margin-left:6px;font-size:10px;padding:1px 5px;border-radius:5px;
+  background:rgba(76,141,255,.16);color:var(--accent);text-transform:none;letter-spacing:0}
+
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
 .card .k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}

@@ -2,13 +2,18 @@
 
 import { useEffect, useRef } from "react";
 
-// Plain price action by default — Liquidity Sweep / MSS / FVG / Breaker Block
-// aren't drawable via TradingView's basic-studies widget, so structure is
-// verified visually on unobstructed candles rather than with indicator overlays.
-const NO_STUDIES = [];
+// Momentum context beneath the candles. Liquidity Sweep / MSS / FVG / Breaker
+// Block still aren't drawable via TradingView's basic-studies widget, so the
+// price pane itself stays unobstructed for reading structure — these two sit
+// in their own panes below it:
+//   Stochastic RSI — momentum exhaustion, useful for timing the pullback
+//                    into the FVG rather than chasing.
+//   MACD           — momentum/trend confirmation of the structure shift.
+// Volume is switched off (hide_volume below) so the price pane stays clean.
+const DEFAULT_STUDIES = ["StochasticRSI@tv-basicstudies", "MACD@tv-basicstudies"];
 
 // Embeds the TradingView Advanced Chart via the legacy tv.js widget loader.
-export default function TradingViewChart({ symbol, interval = "240", height = 520, studies = NO_STUDIES }) {
+export default function TradingViewChart({ symbol, interval = "240", height = 520, studies = DEFAULT_STUDIES }) {
   const ref = useRef(null);
 
   useEffect(() => {
@@ -31,6 +36,7 @@ export default function TradingViewChart({ symbol, interval = "240", height = 52
         allow_symbol_change: true,
         withdateranges: true,
         studies,
+        hide_volume: true, // volume overlay off — Stoch RSI + MACD replace it
         backgroundColor: "rgba(18, 28, 46, 1)",
         gridColor: "rgba(34, 48, 74, 0.6)",
       });

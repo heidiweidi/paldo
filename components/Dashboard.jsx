@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CRYPTO, FOREX } from "@/lib/universe";
-import { analyzeMTF, to4h } from "@/lib/indicators";
+import { analyzeMTF, to4h, STRATEGIES, DEFAULT_FILTERS } from "@/lib/indicators";
 import PositionChart from "@/components/PositionChart";
+
+const STRAT = STRATEGIES.strat5;
 
 async function jget(url) {
   const r = await fetch(url, { cache: "no-store" });
@@ -37,29 +39,62 @@ const PAIRING_TABS = {
   B: { label: "1H → 5m", title: "1H Bias → 5m Entry", higherLabel: "1H", lowerLabel: "5m" },
 };
 
-const ADX_MAX = 50;
 const COIN_COUNTS = [25, 50, 100, 150];
+
+// Optional screening filters, applied on top of a completed Strat#5 setup —
+// never a condition for the setup itself. All default to off so the scanner
+// surfaces every valid entry; switch one on to narrow the list.
+const FILTER_DEFS = [
+  {
+    key: "adx",
+    label: "ADX",
+    unit: "",
+    min: 0, max: 50, step: 1,
+    fmt: (v) => v.toFixed(0),
+    hint: "Trend strength on the bias timeframe. ~20+ is trending rather than choppy.",
+  },
+  {
+    key: "volatility",
+    label: "Volatility",
+    unit: "%",
+    min: 0, max: 5, step: 0.1,
+    fmt: (v) => v.toFixed(1),
+    hint: "ATR(14) as a % of price on the bias timeframe. Under ~0.5% is a sluggish market; over ~2% moves fast.",
+  },
+  {
+    key: "volume",
+    label: "Volume",
+    unit: "×",
+    min: 0, max: 5, step: 0.1,
+    fmt: (v) => v.toFixed(1),
+    hint: "Volume on the entry-timeframe MSS candle vs its own 20-bar average. Note: some forex feeds report no volume, so switching this on will hide those assets.",
+  },
+];
 
 export default function Dashboard() {
   const [mkt, setMkt] = useState("all");
   const [onlySignals, setOnlySignals] = useState(true);
   const [pairing, setPairing] = useState("A"); // which timeframe pairing's table is shown
-  const [adxMin, setAdxMin] = useState(0); // adjustable ADX confluence threshold, 0 = filter effectively off
+  // Optional screening filters — see FILTER_DEFS. Off by default: a Strat#5
+  // setup is a Strat#5 setup regardless of these.
+  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const setFilter = (key, patch) =>
+    setFilters((f) => ({ ...f, [key]: { ...f[key], ...patch } }));
   // Crypto universe: either the curated fixed list in lib/universe.js, or
   // the top N coins by market cap pulled live from CoinGecko. Forex/gold
   // always comes from the fixed FOREX list — CoinGecko is crypto-only.
   const [universe, setUniverse] = useState("curated"); // "curated" | "coingecko"
   const [coinCount, setCoinCount] = useState(50);
-  // Raw bars per symbol — kept separate from analysis so moving the ADX
-  // slider re-scores instantly against already-fetched data instead of
-  // re-hitting Binance/Yahoo (and risking rate limits) on every drag.
+  // Raw bars per symbol — kept separate from analysis so changing a filter
+  // re-scores instantly against already-fetched data instead of re-hitting
+  // Binance/Yahoo (and risking rate limits) on every drag.
   const [barsMap, setBarsMap] = useState([]); // [{ sym, mkt, b4h, b1h, b15m, b5m }]
   const [lastUpdated, setLastUpdated] = useState(null);
   const [status, setStatus] = useState("Loading live data…");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Structure Setup scanner — ICT/SMC liquidity-sweep checklist, run as two
+  // Strat#5 scanner — ICT/SMC liquidity-sweep checklist, run as two
   // independent higher-timeframe/entry-timeframe pairings side by side:
   //   Pairing A: 4H bias -> 15m entry
   //   Pairing B: 1H bias -> 5m entry
@@ -145,19 +180,31 @@ export default function Dashboard() {
 
   useEffect(() => { scan(); }, [scan]);
 
-  // Re-scored from barsMap whenever the ADX threshold changes — no re-fetch.
+  // Re-scored from barsMap whenever a filter changes — no re-fetch. Both
+  // pairings (4H→15m and 1H→5m) get the same strategy and the same filters.
   const rowsA = useMemo(
-    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b4h, x.b15m, adxMin)).filter(Boolean),
-    [barsMap, adxMin]
+    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b4h, x.b15m, filters)).filter(Boolean),
+    [barsMap, filters]
   );
   const rowsB = useMemo(
-    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b1h, x.b5m, adxMin)).filter(Boolean),
-    [barsMap, adxMin]
+    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b1h, x.b5m, filters)).filter(Boolean),
+    [barsMap, filters]
   );
   const readyCount = useMemo(
-    () => rowsA.filter((r) => r.setupReady).length + rowsB.filter((r) => r.setupReady).length,
+    () =>
+      rowsA.filter((r) => r.setupReady && r.filtersPass).length +
+      rowsB.filter((r) => r.setupReady && r.filtersPass).length,
     [rowsA, rowsB]
   );
+  // How many valid Strat#5 setups the active filters are currently hiding —
+  // shown so a filter can never silently make the scanner look empty.
+  const hiddenByFilters = useMemo(
+    () =>
+      rowsA.filter((r) => r.setupReady && !r.filtersPass).length +
+      rowsB.filter((r) => r.setupReady && !r.filtersPass).length,
+    [rowsA, rowsB]
+  );
+  const anyFilterOn = filters.adx.on || filters.volatility.on || filters.volume.on;
   // Lookup so an expanded row can pull its own entry-timeframe candles for
   // the position chart, without re-fetching — barsMap already has them.
   const barsBySymbol = useMemo(() => {
@@ -202,28 +249,57 @@ export default function Dashboard() {
           <input type="checkbox" checked={onlySignals} onChange={(e) => setOnlySignals(e.target.checked)} />
           Signals only
         </label>
-        <label className="ck" style={{ gap: 8 }}>
-          ADX filter &gt; {adxMin}
-          <input
-            type="range"
-            min={0}
-            max={ADX_MAX}
-            step={1}
-            value={adxMin}
-            onChange={(e) => setAdxMin(Number(e.target.value))}
-            style={{ width: 140 }}
-          />
-        </label>
         <button className="btn primary" onClick={scan} disabled={loading}>
           {loading ? "Scanning…" : "↻ Scan"}
         </button>
         <div className="statusline">{statusLine}</div>
       </div>
 
+      <div className="filterbar">
+        <div className="filterbar-head">
+          <span className="filter-title">Filters</span>
+          <span className="filter-sub">
+            optional — narrows the {STRAT.name} results, never changes what counts as a setup
+          </span>
+          {anyFilterOn ? (
+            <button className="btn" style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }} onClick={() => setFilters(DEFAULT_FILTERS)}>
+              Reset filters
+            </button>
+          ) : null}
+        </div>
+        <div className="filter-row">
+          {FILTER_DEFS.map((d) => {
+            const f = filters[d.key];
+            return (
+              <div key={d.key} className={`filter-chip${f.on ? " on" : ""}`} title={d.hint}>
+                <label className="ck">
+                  <input type="checkbox" checked={f.on} onChange={(e) => setFilter(d.key, { on: e.target.checked })} />
+                  {d.label}
+                </label>
+                <span className="filter-val">≥ {d.fmt(f.min)}{d.unit}</span>
+                <input
+                  type="range"
+                  min={d.min}
+                  max={d.max}
+                  step={d.step}
+                  value={f.min}
+                  disabled={!f.on}
+                  onChange={(e) => setFilter(d.key, { min: Number(e.target.value) })}
+                  style={{ width: 110 }}
+                />
+              </div>
+            );
+          })}
+          {anyFilterOn && hiddenByFilters > 0 ? (
+            <span className="filter-hidden">{hiddenByFilters} valid setup(s) hidden by filters</span>
+          ) : null}
+        </div>
+      </div>
+
       {notice ? <div className="notice">⚠ {notice}</div> : null}
 
       <div className="notice" style={{ marginBottom: 12 }}>
-        ⚠ Checklist: <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, confirmed with <b>ADX(14) &gt; {adxMin}</b> on the bias timeframe (trending, not choppy — adjust the slider above, 0–{ADX_MAX}). Volume on the MSS candle is still measured and shown (expand a row to see it) but no longer required to flag a setup — it was screening out too many otherwise-valid setups. Two parallel pairings, higher timeframe for bias / lower timeframe for the entry trigger — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the plain price chart before entering. Click a row's arrow to expand full details; click the symbol to open its chart in a new tab.
+        ⚠ <b>{STRAT.name}</b> — <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, entry sized to <b>1:2 R:R</b>. That checklist alone decides whether a setup exists — ADX, Volatility and Volume are <i>filters only</i> and never gate detection (gating on them was hiding too many valid, profitable entries). Both pairings run the same strategy: <b>4H bias → 15m entry</b> and <b>1H bias → 5m entry</b> — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the chart before entering. Click a row's arrow to expand full details; click the symbol to open its chart in a new tab.
       </div>
 
       <div className="seg" style={{ marginBottom: 14 }}>
@@ -236,7 +312,7 @@ export default function Dashboard() {
 
       <PairingSection
         pairingKey={pairing}
-        title={PAIRING_TABS[pairing].title}
+        title={`${STRAT.name} · ${PAIRING_TABS[pairing].title}`}
         rows={pairing === "A" ? rowsA : rowsB}
         mkt={mkt}
         onlySignals={onlySignals}
@@ -245,10 +321,11 @@ export default function Dashboard() {
         lowerLabel={PAIRING_TABS[pairing].lowerLabel}
         barsBySymbol={barsBySymbol}
         lowerKey={pairing === "A" ? "b15m" : "b5m"}
+        anyFilterOn={anyFilterOn}
       />
 
       <div className="foot">
-        <b>How to read it:</b> The table shows Asset, Price, Chg%, Bias, Entry, Stop, and Target to avoid horizontal scrolling — expand a row (▸) for the full breakdown: the annotated Position chart, the Sweep/MSS/Breaker/FVG checklist, ADX, MSS-candle volume, R:R, bars since MSS, and Still catchable. <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row only shows Entry/Stop/Target once the lower-TF checklist completes, agrees with the higher-TF bias, <i>and</i> ADX &gt; your slider threshold — lower the ADX slider toward 0 to see more candidates, raise it to demand a stronger trend. Volume is shown for context only and no longer blocks a setup. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the expanded R:R). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
+        <b>How to read it:</b> The table shows Asset, Price, Chg%, Bias, Entry, Stop, and Target to avoid horizontal scrolling — expand a row (▸) for the full breakdown: the annotated Position chart, the Sweep/MSS/Breaker/FVG checklist, the ADX / Volatility / Volume readings, R:R, bars since MSS, and Still catchable. <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row shows Entry/Stop/Target as soon as the lower-TF checklist completes and agrees with the higher-TF bias — that's the whole of <b>{STRAT.name}</b>. <b>ADX, Volatility and Volume are filters, not conditions:</b> leave them off to see every valid setup, or switch one on to narrow the list; the count of setups a filter is hiding is always shown next to them. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the expanded R:R). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
         <br /><br />
         <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
       </div>
@@ -256,7 +333,7 @@ export default function Dashboard() {
   );
 }
 
-function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, higherLabel, lowerLabel, barsBySymbol, lowerKey }) {
+function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, higherLabel, lowerLabel, barsBySymbol, lowerKey, anyFilterOn }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const toggleRow = (sym) => {
     setExpanded((prev) => {
@@ -270,6 +347,9 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
     let r = rows.slice();
     if (mkt !== "all") r = r.filter((x) => x.mkt === mkt);
     if (onlySignals) r = r.filter((x) => x.aligned);
+    // Filters only ever remove rows from view — they never changed whether the
+    // setup was detected in the first place.
+    r = r.filter((x) => x.filtersPass);
     r.sort((a, b) => {
       const av = (a.setupReady ? 2 : 0) + (a.aligned ? 1 : 0);
       const bv = (b.setupReady ? 2 : 0) + (b.aligned ? 1 : 0);
@@ -280,7 +360,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
   }, [rows, mkt, onlySignals]);
 
   const cards = useMemo(() => {
-    const scoped = rows.filter((r) => mkt === "all" || r.mkt === mkt);
+    const scoped = rows.filter((r) => (mkt === "all" || r.mkt === mkt) && r.filtersPass);
     const aligned = scoped.filter((r) => r.aligned);
     const ready = scoped.filter((r) => r.setupReady);
     return {
@@ -288,6 +368,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
       alignedShorts: aligned.filter((r) => r.biasLow === "short").length,
       readyLongs: ready.filter((r) => r.biasLow === "long").length,
       readyShorts: ready.filter((r) => r.biasLow === "short").length,
+      scanned: scoped.length,
     };
   }, [rows, mkt]);
 
@@ -297,9 +378,9 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
 
       <div className="cards">
         <div className="card"><div className="k">{higherLabel}/{lowerLabel} aligned</div><div className="v"><span style={{ color: "var(--long)" }}>{cards.alignedLongs}</span> / <span style={{ color: "var(--short)" }}>{cards.alignedShorts}</span> <small>bull/bear</small></div></div>
-        <div className="card"><div className="k">Ready setups (+ FVG)</div><div className="v"><span style={{ color: "var(--long)" }}>{cards.readyLongs}</span> / <span style={{ color: "var(--short)" }}>{cards.readyShorts}</span> <small>bull/bear</small></div></div>
+        <div className="card"><div className="k">Ready {STRAT.name} setups</div><div className="v"><span style={{ color: "var(--long)" }}>{cards.readyLongs}</span> / <span style={{ color: "var(--short)" }}>{cards.readyShorts}</span> <small>bull/bear</small></div></div>
         <div className="card"><div className="k">Bias / Entry timeframe</div><div className="v">{higherLabel} <small>/ {lowerLabel}</small></div></div>
-        <div className="card"><div className="k">Assets scanned</div><div className="v">{rows.length}</div></div>
+        <div className="card"><div className="k">Assets {anyFilterOn ? "passing filters" : "scanned"}</div><div className="v">{cards.scanned}{anyFilterOn ? <small> / {rows.length}</small> : null}</div></div>
       </div>
 
       <div className="tblwrap">
@@ -345,6 +426,24 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
   );
 }
 
+// A filter metric in the expanded row: always shows the live reading, and
+// marks pass/fail only when that filter is actually switched on.
+function FilterStat({ label, f, render }) {
+  const has = f && f.value != null;
+  return (
+    <div className="stat">
+      <div className="stat-k">
+        {label}
+        {f?.on ? <span className="filter-tag">filter ≥ {render(f.min)}</span> : null}
+      </div>
+      <div className={`stat-v ${f?.on ? (f.pass ? "long-txt" : "short-txt") : ""}`}>
+        {has ? render(f.value) : <span style={{ color: "var(--muted)" }}>no data</span>}
+        {f?.on ? <span style={{ marginLeft: 6 }}>{f.pass ? "✓" : "✗"}</span> : null}
+      </div>
+    </div>
+  );
+}
+
 function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onToggle, lowerBars }) {
   const ck = (v) => (v ? <span className="pill long">✓</span> : <span className="pill flat">—</span>);
   return (
@@ -365,7 +464,7 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
           <span className={`dot ${biasCls}`} />
           <a
             className="sym-link"
-            href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}&adxMin=${r.confluence?.adx?.threshold ?? 0}`}
+            href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}`}
             title={`Open ${r.symbol} structure setup & chart`}
             target="_blank"
             rel="noreferrer"
@@ -444,14 +543,21 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
                   <div className="stat-v">{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</div>
                 </div>
                 <div className="stat"><div className="stat-k">{lowerLabel} FVG</div><div className="stat-v">{ck(r.checklist?.fvg)}</div></div>
-                <div className="stat">
-                  <div className="stat-k">ADX (gates readiness)</div>
-                  <div className="stat-v" title={r.confluence?.adx?.value != null ? `ADX ${r.confluence.adx.value.toFixed(1)} (need > ${r.confluence.adx.threshold})` : ""}>{ck(r.confluence?.adx?.ok)}</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-k">MSS Volume (info only)</div>
-                  <div className="stat-v" title={r.confluence?.volume?.ratio ? `${r.confluence.volume.ratio.toFixed(1)}× avg on the MSS candle` : ""}>{ck(r.confluence?.volume?.ok)}</div>
-                </div>
+                <FilterStat
+                  label={`ADX (${higherLabel})`}
+                  f={r.filters?.adx}
+                  render={(v) => v.toFixed(1)}
+                />
+                <FilterStat
+                  label={`Volatility (${higherLabel} ATR%)`}
+                  f={r.filters?.volatility}
+                  render={(v) => `${v.toFixed(2)}%`}
+                />
+                <FilterStat
+                  label={`Volume (${lowerLabel} MSS candle)`}
+                  f={r.filters?.volume}
+                  render={(v) => `${v.toFixed(1)}× avg`}
+                />
               </div>
 
               <div className="stats-card col-half">
