@@ -25,7 +25,8 @@ function fmt(n, sym) {
 const ENTRY_WINDOW = {
   in_zone: { cls: "long", label: "✓ In zone" },
   running: { cls: "warn", label: "Running — past entry" },
-  reached: { cls: "flat", label: "Target reached" },
+  tp1_hit: { cls: "flat", label: "TP1 hit — runner only" },
+  tp2_hit: { cls: "flat", label: "TP2 reached" },
   invalidated: { cls: "short", label: "✗ Invalidated" },
 };
 function EntryWindowPill({ status }) {
@@ -299,7 +300,7 @@ export default function Dashboard() {
       {notice ? <div className="notice">⚠ {notice}</div> : null}
 
       <div className="notice" style={{ marginBottom: 12 }}>
-        ⚠ <b>{STRAT.name}</b> — <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, entry sized to <b>1:2 R:R</b>. That checklist alone decides whether a setup exists — ADX, Volatility and Volume are <i>filters only</i> and never gate detection (gating on them was hiding too many valid, profitable entries). Both pairings run the same strategy: <b>4H bias → 15m entry</b> and <b>1H bias → 5m entry</b> — pick a tab below. Target is the next unswept swing (POI) on the <i>higher</i> timeframe ahead of price, falling back to a fixed 1:2 if none exists yet. <b>Breaker Block is never automated</b> — confirm it yourself on the chart before entering. Click a row's arrow to expand full details; click the symbol to open its chart in a new tab.
+        ⚠ <b>{STRAT.name}</b> — <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, exiting in two scales: <b>TP1 at 1:1</b> (bank half, de-risk) and <b>TP2 at 1:2</b> (the runner). That checklist alone decides whether a setup exists — ADX, Volatility and Volume are <i>filters only</i> and never gate detection (gating on them was hiding too many valid, profitable entries). Both pairings run the same strategy: <b>4H bias → 15m entry</b> and <b>1H bias → 5m entry</b> — pick a tab below. The <b>POI</b> (next unswept liquidity on the bias timeframe) is <i>marked, not targeted</i> — it shows where price is likely headed after TP2; its distance in R tells you how much room the runner has. <b>Breaker Block is never automated</b> — confirm it yourself on the chart before entering. Click a row's arrow to expand full details; click the symbol to open its chart in a new tab.
       </div>
 
       <div className="seg" style={{ marginBottom: 14 }}>
@@ -325,7 +326,7 @@ export default function Dashboard() {
       />
 
       <div className="foot">
-        <b>How to read it:</b> The table shows Asset, Price, Chg%, Bias, Entry, Stop, and Target to avoid horizontal scrolling — expand a row (▸) for the full breakdown: the annotated Position chart, the Sweep/MSS/Breaker/FVG checklist, the ADX / Volatility / Volume readings, R:R, bars since MSS, and Still catchable. <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row shows Entry/Stop/Target as soon as the lower-TF checklist completes and agrees with the higher-TF bias — that's the whole of <b>{STRAT.name}</b>. <b>ADX, Volatility and Volume are filters, not conditions:</b> leave them off to see every valid setup, or switch one on to narrow the list; the count of setups a filter is hiding is always shown next to them. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the expanded R:R). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
+        <b>How to read it:</b> The table shows Asset, Price, Chg%, Bias, Entry, Stop, TP1, TP2 and POI — expand a row (▸) for the full breakdown: the annotated Position chart, the Sweep/MSS/Breaker/FVG checklist, the ADX / Volatility / Volume readings, bars since MSS, and Still catchable. <b>Why two targets:</b> taking the whole position to the next liquidity pool meant a reward-to-risk that swung with however far that pool happened to sit — often 4–5R, which reads well but rarely fills. Fixed <b>TP1 at 1:1</b> and <b>TP2 at 1:2</b> are far likelier to actually be reached; scale out at TP1 and the rest runs risk-free. The <b>POI</b> column is context, not an exit: it's the next unswept liquidity on the bias timeframe, with its distance in R — comfortably beyond TP2 means the runner has room, closer than TP2 means price may stall before it. <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row shows Entry/Stop/TP1/TP2 as soon as the lower-TF checklist completes and agrees with the higher-TF bias — that's the whole of <b>{STRAT.name}</b>. <b>ADX, Volatility and Volume are filters, not conditions:</b> leave them off to see every valid setup, or switch one on to narrow the list; the count of setups a filter is hiding is always shown next to them. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the expanded R:R). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
         <br /><br />
         <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
       </div>
@@ -394,12 +395,14 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
               <th>{higherLabel} Bias</th>
               <th>Entry</th>
               <th>Stop</th>
-              <th>Target</th>
+              <th title="1:1 — bank half and de-risk">TP1 1:1</th>
+              <th title="1:2 — the runner">TP2 1:2</th>
+              <th title="Next unswept liquidity on the bias timeframe — where price is likely headed next, not an exit">POI</th>
             </tr>
           </thead>
           <tbody>
             {view.length === 0 ? (
-              <tr><td colSpan={8} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
+              <tr><td colSpan={10} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
             ) : (
               view.map((r) => {
                 const biasCls = r.biasHigh === "long" ? "up" : r.biasHigh === "short" ? "down" : "no";
@@ -483,12 +486,20 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
         </td>
         <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
         <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
-        <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</td>
+        <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? fmt(r.tp1, r.symbol) : "—"}</td>
+        <td className="num" style={{ color: "var(--long)", opacity: 0.75 }}>{r.setupReady ? fmt(r.tp2, r.symbol) : "—"}</td>
+        <td className="num poi-txt" title={r.poiR != null ? `${r.poiR.toFixed(1)}R from entry` : "no unswept pool ahead yet"}>
+          {r.setupReady && r.poi != null ? (
+            <>
+              {fmt(r.poi, r.symbol)} <small style={{ opacity: 0.8 }}>{r.poiR != null ? `${r.poiR.toFixed(1)}R` : ""}</small>
+            </>
+          ) : "—"}
+        </td>
       </tr>
       {isOpen ? (
         <tr className="expand-row">
           <td></td>
-          <td colSpan={7} style={{ whiteSpace: "normal", verticalAlign: "top" }}>
+          <td colSpan={9} style={{ whiteSpace: "normal", verticalAlign: "top" }}>
             <div className="three-col" style={{ padding: "8px 0 14px" }}>
               <div className="chart-panel" style={{ margin: 0 }}>
                 <div className="pos-head">
@@ -497,7 +508,9 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
                     <>
                       <span className="pos-badge entry">Entry {fmt(r.entry, r.symbol)}</span>
                       <span className="pos-badge stop">Stop {fmt(r.stop, r.symbol)}</span>
-                      <span className="pos-badge target">Target {fmt(r.target, r.symbol)}</span>
+                      <span className="pos-badge target">TP1 {fmt(r.tp1, r.symbol)}</span>
+                      <span className="pos-badge target">TP2 {fmt(r.tp2, r.symbol)}</span>
+                      {r.poi != null ? <span className="pos-badge poi">POI {fmt(r.poi, r.symbol)}</span> : null}
                     </>
                   ) : (
                     <small style={{ color: "var(--muted)" }}>checklist not complete yet</small>
@@ -508,7 +521,9 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
                     bars={lowerBars}
                     entry={r.entry}
                     stop={r.stop}
-                    target={r.target}
+                    tp1={r.tp1}
+                    tp2={r.tp2}
+                    poi={r.poi}
                     sweepLevel={r.sweepLevel}
                     mssLevel={r.mssLevel}
                     fvgZone={r.fvgZone}
@@ -521,7 +536,8 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
                 <div className="chart-legend">
                   <span><i className="sw" style={{ background: "var(--warn)" }} />Entry</span>
                   <span><i className="sw" style={{ background: "var(--short)" }} />Stop</span>
-                  <span><i className="sw" style={{ background: "var(--long)" }} />Target</span>
+                  <span><i className="sw" style={{ background: "var(--long)" }} />TP1 / TP2</span>
+                  <span><i className="sw" style={{ background: "#c58cff" }} />POI (next liquidity)</span>
                   <span><i className="sw" style={{ background: "var(--muted)" }} />Sweep</span>
                   <span><i className="sw" style={{ background: "var(--accent)" }} />MSS</span>
                   <span><i className="sw" style={{ background: "rgba(76,141,255,.4)" }} />FVG</span>
@@ -563,8 +579,16 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
               <div className="stats-card col-half">
                 <div className="stat"><div className="stat-k">Entry</div><div className="stat-v">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</div></div>
                 <div className="stat"><div className="stat-k">Stop</div><div className="stat-v short-txt">{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</div></div>
-                <div className="stat"><div className="stat-k">Target</div><div className="stat-v long-txt">{r.setupReady ? `${fmt(r.target, r.symbol)}${r.targetSource === "poi" ? " (POI)" : ""}` : "—"}</div></div>
-                <div className="stat"><div className="stat-k">R:R</div><div className="stat-v rr">{r.setupReady ? `${r.rr.toFixed(1)}:1` : "—"}</div></div>
+                <div className="stat"><div className="stat-k">TP1 (1:1)</div><div className="stat-v long-txt">{r.setupReady ? fmt(r.tp1, r.symbol) : "—"}</div></div>
+                <div className="stat"><div className="stat-k">TP2 (1:2)</div><div className="stat-v long-txt">{r.setupReady ? fmt(r.tp2, r.symbol) : "—"}</div></div>
+                <div className="stat">
+                  <div className="stat-k">POI — next liquidity</div>
+                  <div className="stat-v poi-txt">
+                    {r.setupReady && r.poi != null
+                      ? <>{fmt(r.poi, r.symbol)} <small style={{ color: "var(--muted)" }}>{r.poiR != null ? `· ${r.poiR.toFixed(1)}R ${r.poiBeyondTp2 ? "(beyond TP2 — room to run)" : "(before TP2)"}` : ""}</small></>
+                      : r.setupReady ? <small style={{ color: "var(--muted)" }}>none unswept ahead</small> : "—"}
+                  </div>
+                </div>
                 <div className="stat"><div className="stat-k">Bars since {lowerLabel} MSS</div><div className="stat-v">{r.barsAgo != null ? r.barsAgo : "—"}</div></div>
                 <div className="stat"><div className="stat-k">Still catchable?</div><div className="stat-v">{r.setupReady ? <EntryWindowPill status={r.entryWindow} /> : "—"}</div></div>
               </div>

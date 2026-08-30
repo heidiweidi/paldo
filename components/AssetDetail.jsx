@@ -36,13 +36,15 @@ function fmt(n, sym) {
 const ENTRY_WINDOW = {
   in_zone: { cls: "long", label: "✓ In zone — price has pulled back to entry" },
   running: { cls: "warn", label: "Running — already past entry, no pullback yet" },
-  reached: { cls: "flat", label: "Target already reached" },
+  tp1_hit: { cls: "flat", label: "TP1 (1:1) already hit — runner only" },
+  tp2_hit: { cls: "flat", label: "TP2 (1:2) already reached" },
   invalidated: { cls: "short", label: "✗ Invalidated — stop already hit" },
 };
 const ENTRY_WINDOW_NOTE = {
   in_zone: "Price is currently sitting in the entry zone — this is your window.",
   running: "Price already ran past entry without pulling back — chasing it now means worse risk/reward than planned.",
-  reached: "Price has already reached the target — this one's played out.",
+  tp1_hit: "Price has already traded through TP1 — the 1:1 scale-out is gone; only the TP2 runner remains, on worse terms than planned.",
+  tp2_hit: "Price has already reached TP2 — this one's fully played out.",
   invalidated: "Price has already traded through the stop — this setup is dead, don't chase it.",
 };
 
@@ -62,12 +64,16 @@ function narrative(m, p) {
   } else if (!m.checklist?.fvg) {
     parts.push(`${p.lowerLabel} is aligned with the ${p.higherLabel} bias (Sweep + MSS confirmed), but no Fair Value Gap has formed yet in the ${p.lowerLabel} reversal leg — no entry until one does.`);
   } else {
-    const targetNote = m.targetSource === "poi"
-      ? `target ${fmt(m.target, m.symbol)} at the next unswept swing (POI) on the ${p.higherLabel}`
-      : `target ${fmt(m.target, m.symbol)} (no clear ${p.higherLabel} POI ahead yet, so this falls back to a fixed 1:2 risk/reward)`;
     parts.push(
-      `${p.lowerLabel} is aligned and complete: Sweep → MSS → FVG all confirmed, ${m.barsAgo != null ? `${m.barsAgo} bar(s) since the ${p.lowerLabel} MSS` : ""}. Entry sits mid-gap at ${fmt(m.entry, m.symbol)}, stop beyond the ${p.lowerLabel} sweep at ${fmt(m.stop, m.symbol)}, ${targetNote} — a ${m.rr.toFixed(1)}:1 reward-to-risk.`
+      `${p.lowerLabel} is aligned and complete: Sweep → MSS → FVG all confirmed, ${m.barsAgo != null ? `${m.barsAgo} bar(s) since the ${p.lowerLabel} MSS` : ""}. Entry sits mid-gap at ${fmt(m.entry, m.symbol)}, stop beyond the ${p.lowerLabel} sweep at ${fmt(m.stop, m.symbol)}. Scale out at TP1 ${fmt(m.tp1, m.symbol)} (1:1) to de-risk, and let the rest run to TP2 ${fmt(m.tp2, m.symbol)} (1:2).`
     );
+    if (m.poi != null) {
+      parts.push(
+        `The next unswept liquidity pool on the ${p.higherLabel} sits at ${fmt(m.poi, m.symbol)}${m.poiR != null ? `, ${m.poiR.toFixed(1)}R from entry` : ""} — ${m.poiBeyondTp2 ? "beyond TP2, so the runner has room to reach for it" : "closer than TP2, so price may stall or reverse around there before TP2 fills"}.`
+      );
+    } else {
+      parts.push(`No unswept liquidity pool ahead on the ${p.higherLabel} yet, so there's no obvious magnet drawing price beyond TP2.`);
+    }
     parts.push(ENTRY_WINDOW_NOTE[m.entryWindow] || "");
   }
 
@@ -194,7 +200,9 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
                   <>
                     <span className="pos-badge entry">Entry {fmt(m.entry, symbol)}</span>
                     <span className="pos-badge stop">Stop {fmt(m.stop, symbol)}</span>
-                    <span className="pos-badge target">Target {fmt(m.target, symbol)}</span>
+                    <span className="pos-badge target">TP1 {fmt(m.tp1, symbol)}</span>
+                    <span className="pos-badge target">TP2 {fmt(m.tp2, symbol)}</span>
+                    {m.poi != null ? <span className="pos-badge poi">POI {fmt(m.poi, symbol)}</span> : null}
                   </>
                 ) : (
                   <small style={{ color: "var(--muted)" }}>checklist not complete yet</small>
@@ -204,7 +212,9 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
                 bars={bars ? bars[p.lower] : null}
                 entry={m.entry}
                 stop={m.stop}
-                target={m.target}
+                tp1={m.tp1}
+                tp2={m.tp2}
+                poi={m.poi}
                 sweepLevel={m.sweepLevel}
                 mssLevel={m.mssLevel}
                 fvgZone={m.fvgZone}
@@ -214,7 +224,8 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
               <div className="chart-legend">
                 <span><i className="sw" style={{ background: "var(--warn)" }} />Entry</span>
                 <span><i className="sw" style={{ background: "var(--short)" }} />Stop</span>
-                <span><i className="sw" style={{ background: "var(--long)" }} />Target</span>
+                <span><i className="sw" style={{ background: "var(--long)" }} />TP1 (1:1) / TP2 (1:2)</span>
+                <span><i className="sw" style={{ background: "#c58cff" }} />POI — next liquidity</span>
                 <span><i className="sw" style={{ background: "var(--muted)" }} />Liquidity Sweep</span>
                 <span><i className="sw" style={{ background: "var(--accent)" }} />MSS</span>
                 <span><i className="sw" style={{ background: "rgba(76,141,255,.4)" }} />FVG zone</span>
@@ -246,8 +257,21 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
             <div className="stats-card col-half">
               <Stat label="Entry" value={m.setupReady ? fmt(m.entry, symbol) : "—"} />
               <Stat label={`Stop (${p.lowerLabel} sweep extreme)`} value={m.setupReady ? fmt(m.stop, symbol) : "—"} cls="short" />
-              <Stat label={`Target (${m.targetSource === "poi" ? `${p.higherLabel} POI` : "fixed 1:2"})`} value={m.setupReady ? fmt(m.target, symbol) : "—"} cls="long" />
-              <Stat label="Reward : Risk" value={m.setupReady ? `${m.rr.toFixed(1)} : 1` : "—"} />
+              <Stat label="TP1 — 1:1 (de-risk)" value={m.setupReady ? fmt(m.tp1, symbol) : "—"} cls="long" />
+              <Stat label="TP2 — 1:2 (runner)" value={m.setupReady ? fmt(m.tp2, symbol) : "—"} cls="long" />
+              <div className="stat">
+                <div className="stat-k">POI — next {p.higherLabel} liquidity</div>
+                <div className="stat-v poi-txt">
+                  {m.setupReady && m.poi != null ? (
+                    <>
+                      {fmt(m.poi, symbol)}
+                      <div style={{ fontSize: 11.5, fontWeight: 500, color: "var(--muted)", marginTop: 2 }}>
+                        {m.poiR != null ? `${m.poiR.toFixed(1)}R from entry — ${m.poiBeyondTp2 ? "beyond TP2, room to run" : "before TP2, may stall"}` : ""}
+                      </div>
+                    </>
+                  ) : m.setupReady ? <small style={{ color: "var(--muted)" }}>none unswept ahead</small> : "—"}
+                </div>
+              </div>
               <Stat label={`Bars since ${p.lowerLabel} MSS`} value={m.barsAgo != null ? String(m.barsAgo) : "—"} />
               <div>
                 <div className="stat-k">Still catchable?</div>
@@ -263,7 +287,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
       ) : null}
 
       <div className="foot">
-        <b>{STRAT.name}</b> — {STRAT.short}, entry sized to 1:2 R:R. Liquidity Sweep, MSS, and FVG are computed from the data above; Breaker Block is a candidate only — confirm it, and the overall pattern, visually before acting. ADX, Volatility and Volume are shown here purely as context: they're optional filters in the scanner and never decide whether a setup exists. The price pane is left unobstructed for reading structure, with Stochastic RSI and MACD in panes below. Target is the next unswept swing on the {p.higherLabel} ahead of price, or a fixed 1:2 risk/reward when no such level exists yet.{" "}
+        <b>{STRAT.name}</b> — {STRAT.short}, entry sized to 1:2 R:R. Liquidity Sweep, MSS, and FVG are computed from the data above; Breaker Block is a candidate only — confirm it, and the overall pattern, visually before acting. ADX, Volatility and Volume are shown here purely as context: they're optional filters in the scanner and never decide whether a setup exists. The price pane is left unobstructed for reading structure, with Stochastic RSI and MACD in panes below. Exits are scaled — <b>TP1 at 1:1</b> to bank half and move the stop to break-even, <b>TP2 at 1:2</b> for the remainder — chosen over targeting the liquidity pool directly because a fixed 1R is far likelier to fill than a pool that might sit 4–5R away. The <b>POI</b> is marked as context for where price is drawn next, not as an exit.{" "}
         Educational signal simulation on live public data — <b>not financial advice</b>. Confirm on the chart before acting.
       </div>
     </div>

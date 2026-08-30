@@ -9,12 +9,16 @@ const WARN = "#f2b13c";
 const ACCENT = "#4c8dff";
 const MUTED = "#8ba0be";
 const TXT = "#e7edf6";
+const POI_C = "#c58cff"; // next liquidity pool — distinct from MSS blue
 
 // Our own candlestick chart (TradingView's *embedded* widget is a cross-origin
 // iframe with no API for injecting drawings, so every checklist marker has to
 // live on a chart we render ourselves — this uses TradingView's open-source
 // lightweight-charts library) for this exact asset's real data. Draws:
-//   - Entry/Stop/Target price lines plus shaded risk (red) / reward (green) bands
+//   - Entry/Stop plus TP1 (1:1) and TP2 (1:2), with shaded risk (red) and
+//     reward (green) bands
+//   - The POI — next unswept liquidity on the bias timeframe — as a marker of
+//     where price is likely headed after TP2, not as a target itself
 //   - Liquidity Sweep / MSS levels as dotted price lines
 //   - The Fair Value Gap as a shaded zone between its start/end candles
 //   - The Breaker Block candidate as a dashed outline around that candle
@@ -23,7 +27,7 @@ const TXT = "#e7edf6";
 // against), so we look up real chart times from `bars` directly rather than
 // the chart's internal (sorted/deduped) series data.
 export default function PositionChart({
-  bars, entry, stop, target,
+  bars, entry, stop, tp1, tp2, poi,
   sweepLevel, mssLevel, fvgZone, breaker,
   height = 320,
 }) {
@@ -68,8 +72,16 @@ export default function PositionChart({
     if (stop != null) {
       series.createPriceLine({ price: stop, color: SHORT, lineWidth: 2, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: "Stop" });
     }
-    if (target != null) {
-      series.createPriceLine({ price: target, color: LONG, lineWidth: 2, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: "Target" });
+    if (tp1 != null) {
+      series.createPriceLine({ price: tp1, color: LONG, lineWidth: 2, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: "TP1 1:1" });
+    }
+    if (tp2 != null) {
+      series.createPriceLine({ price: tp2, color: LONG, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "TP2 1:2" });
+    }
+    // Where price is likely to travel next — drawn deliberately unlike the TP
+    // lines so it never reads as an exit level.
+    if (poi != null) {
+      series.createPriceLine({ price: poi, color: POI_C, lineWidth: 2, lineStyle: LineStyle.LargeDashed, axisLabelVisible: true, title: "POI — next liquidity" });
     }
     if (sweepLevel != null) {
       series.createPriceLine({ price: sweepLevel, color: MUTED, lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: true, title: "Liquidity Sweep" });
@@ -100,18 +112,27 @@ export default function PositionChart({
       const right = scaleWidth();
       let html = "";
 
-      if (entry != null && stop != null && target != null) {
+      if (entry != null && stop != null) {
         const yEntry = series.priceToCoordinate(entry);
         const yStop = series.priceToCoordinate(stop);
-        const yTarget = series.priceToCoordinate(target);
-        if (yEntry != null && yStop != null && yTarget != null) {
+        if (yEntry != null && yStop != null) {
           const riskTop = Math.min(yEntry, yStop);
           const riskH = Math.max(1, Math.abs(yStop - yEntry));
-          const rewardTop = Math.min(yEntry, yTarget);
-          const rewardH = Math.max(1, Math.abs(yTarget - yEntry));
           html += `<div style="position:absolute;left:0;right:${right}px;top:${riskTop}px;height:${riskH}px;background:rgba(255,84,112,0.14);border-top:1px dashed rgba(255,84,112,0.5);border-bottom:1px dashed rgba(255,84,112,0.5);"></div>`;
-          html += `<div style="position:absolute;left:0;right:${right}px;top:${rewardTop}px;height:${rewardH}px;background:rgba(31,191,117,0.14);border-top:1px dashed rgba(31,191,117,0.5);border-bottom:1px dashed rgba(31,191,117,0.5);"></div>`;
         }
+        // Reward shading is split so the 1R band (entry->TP1) reads as the
+        // high-probability leg and the 1R->2R band as the runner.
+        const shadeBand = (from, to, alpha) => {
+          if (from == null || to == null) return;
+          const yA = series.priceToCoordinate(from);
+          const yB = series.priceToCoordinate(to);
+          if (yA == null || yB == null) return;
+          const top = Math.min(yA, yB);
+          const h = Math.max(1, Math.abs(yB - yA));
+          html += `<div style="position:absolute;left:0;right:${right}px;top:${top}px;height:${h}px;background:rgba(31,191,117,${alpha});border-top:1px dashed rgba(31,191,117,0.45);border-bottom:1px dashed rgba(31,191,117,0.45);"></div>`;
+        };
+        shadeBand(entry, tp1, 0.18);
+        shadeBand(tp1, tp2, 0.09);
       }
 
       if (fvgZone && fvgZone.fromIdx != null && fvgZone.toIdx != null) {
@@ -158,7 +179,7 @@ export default function PositionChart({
       resizeObs.disconnect();
       chart.remove();
     };
-  }, [bars, entry, stop, target, sweepLevel, mssLevel, fvgZone, breaker]);
+  }, [bars, entry, stop, tp1, tp2, poi, sweepLevel, mssLevel, fvgZone, breaker]);
 
   return (
     <div style={{ position: "relative", height }}>
