@@ -9,6 +9,7 @@ import TradingViewChart from "@/components/TradingViewChart";
 import PositionChart from "@/components/PositionChart";
 
 const STRAT = STRATEGIES.strat5;
+const GRADE_CLS = { "A+": "grade-aplus", A: "grade-a", B: "grade-b" };
 // Stochastic RSI + MACD in their own panes; volume is hidden in the widget
 // config. Module-scope constant so the chart isn't re-mounted every render.
 const STUDIES = ["StochasticRSI@tv-basicstudies", "MACD@tv-basicstudies"];
@@ -158,6 +159,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
           <button className={chartView === "higher" ? "active" : ""} onClick={() => setChartView("higher")}>{p.higherLabel} (bias)</button>
         </div>
         <span className="filter-title" style={{ marginLeft: "auto" }}>{STRAT.name}</span>
+        {m?.grade ? <span className={`grade ${GRADE_CLS[m.grade] || ""}`}>{m.grade}</span> : null}
       </div>
 
       <div className="detail-title">
@@ -191,6 +193,25 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
               Open full chart on TradingView ↗
             </a>
           </div>
+
+          {m.quality ? (
+            <div className="why-card" style={{ marginBottom: 14 }}>
+              <div className="why-head">
+                <span className={`grade ${GRADE_CLS[m.grade] || ""}`}>{m.grade}</span>
+                <span>setup — scored {m.quality.score} of {m.quality.max}. Grades measure structural quality, not timing.</span>
+              </div>
+              <div className="why-list">
+                {m.quality.reasons.map((why) => (
+                  <div key={why.key} className={`why-row ${why.tone}`}>
+                    <span className="why-mark">{why.tone === "strong" ? "✓" : why.tone === "weak" ? "✗" : "~"}</span>
+                    <span className="why-label">{why.label}</span>
+                    <span className="why-detail">{why.detail}</span>
+                    <span className="why-score">{why.score}/{why.max}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="three-col">
             <div className="chart-panel">

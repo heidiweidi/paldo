@@ -153,6 +153,42 @@ td.empty{text-align:center;color:var(--muted);padding:30px}
 .pos-badge.poi{background:rgba(197,140,255,.16);color:#c58cff}
 .poi-txt{color:#c58cff}
 
+/* setup grade */
+.grade{display:inline-block;min-width:30px;text-align:center;padding:3px 8px;border-radius:7px;
+  font-weight:800;font-size:12px;letter-spacing:.3px}
+.grade-aplus{background:rgba(31,191,117,.18);color:#31d68c;box-shadow:inset 0 0 0 1px rgba(31,191,117,.45)}
+.grade-a{background:rgba(76,141,255,.16);color:#7db0ff;box-shadow:inset 0 0 0 1px rgba(76,141,255,.4)}
+.grade-b{background:rgba(139,160,190,.14);color:var(--muted);box-shadow:inset 0 0 0 1px rgba(139,160,190,.3)}
+
+/* "why this grade" breakdown */
+.why-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:10px 12px;margin:10px 0 4px}
+.why-head{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);margin-bottom:8px}
+.why-list{display:grid;gap:4px}
+.why-row{display:grid;grid-template-columns:16px 118px 1fr 34px;gap:8px;align-items:baseline;
+  font-size:12.5px;line-height:1.45}
+@media(max-width:760px){.why-row{grid-template-columns:16px 1fr;}
+  .why-row .why-score{display:none}.why-row .why-label{font-weight:700}}
+.why-mark{font-weight:800}
+.why-row.strong .why-mark{color:var(--long)}
+.why-row.ok .why-mark{color:var(--warn)}
+.why-row.weak .why-mark{color:var(--short)}
+.why-label{color:var(--txt);font-weight:600}
+.why-detail{color:var(--muted)}
+.why-score{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* alerts panel */
+.btn.alert-on{border-color:var(--long);color:#31d68c}
+.webhook-input{background:var(--panel);border:1px solid var(--line);color:var(--txt);
+  border-radius:9px;padding:7px 11px;font-size:13px;min-width:340px;flex:1}
+.webhook-input:focus{outline:none;border-color:var(--accent)}
+.alert-help{margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.6}
+.alert-help code{background:var(--panel);padding:1px 5px;border-radius:4px;font-size:11px}
+.alert-log{margin-top:10px;border-top:1px solid var(--line);padding-top:8px;
+  max-height:150px;overflow:auto;display:grid;gap:3px}
+.alert-log-row{font-size:12px;color:var(--txt)}
+.alert-log-time{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:6px}
+
 /* three-column layout: position chart (idea) + two columns of checklist detail */
 .three-col{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:14px;align-items:start}
 @media(max-width:980px){.three-col{grid-template-columns:1fr}}

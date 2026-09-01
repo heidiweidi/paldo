@@ -1,11 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CRYPTO, FOREX } from "@/lib/universe";
 import { analyzeMTF, to4h, STRATEGIES, DEFAULT_FILTERS } from "@/lib/indicators";
 import PositionChart from "@/components/PositionChart";
+import {
+  ALERT_EVENTS, DEFAULT_ALERT_SETTINGS, loadSettings, saveSettings,
+  collectAlerts, markSent, sendAlerts, buildEmbed, clearLedger,
+} from "@/lib/alerts";
 
 const STRAT = STRATEGIES.strat5;
+
+const GRADE_CLS = { "A+": "grade-aplus", A: "grade-a", B: "grade-b" };
+function GradeBadge({ grade, title }) {
+  if (!grade) return <span className="pill flat">—</span>;
+  return <span className={`grade ${GRADE_CLS[grade] || ""}`} title={title}>{grade}</span>;
+}
 
 async function jget(url) {
   const r = await fetch(url, { cache: "no-store" });
@@ -94,6 +104,24 @@ export default function Dashboard() {
   const [status, setStatus] = useState("Loading live data…");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // --- alerts ---
+  // Settings live in localStorage (loaded after mount so server and client
+  // render the same markup and React doesn't complain about a hydration
+  // mismatch).
+  const [alerts, setAlerts] = useState(DEFAULT_ALERT_SETTINGS);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [alertLog, setAlertLog] = useState([]); // most recent first, in-session
+  const [alertStatus, setAlertStatus] = useState("");
+  const [autoScan, setAutoScan] = useState(false);
+  useEffect(() => { setAlerts(loadSettings()); }, []);
+  const updateAlerts = (patch) => {
+    setAlerts((prev) => {
+      const next = { ...prev, ...patch, events: { ...prev.events, ...(patch.events || {}) } };
+      saveSettings(next);
+      return next;
+    });
+  };
 
   // Strat#5 scanner — ICT/SMC liquidity-sweep checklist, run as two
   // independent higher-timeframe/entry-timeframe pairings side by side:
@@ -206,6 +234,71 @@ export default function Dashboard() {
     [rowsA, rowsB]
   );
   const anyFilterOn = filters.adx.on || filters.volatility.on || filters.volume.on;
+
+  // Fire alerts whenever fresh data lands. Both pairings are watched
+  // regardless of which tab is on screen — the whole point is to catch the
+  // ones you aren't looking at. Filters deliberately don't apply here: they're
+  // a way to browse the table, not a reason to go silent on a valid setup.
+  const scanSeq = useRef(0);
+  useEffect(() => {
+    if (!alerts.enabled || !barsMap.length) return;
+    let cancelled = false;
+    const seq = ++scanSeq.current;
+    (async () => {
+      const pending = [
+        ...collectAlerts(rowsA, "A", alerts),
+        ...collectAlerts(rowsB, "B", alerts),
+      ];
+      if (!pending.length || cancelled) return;
+      const site = typeof window !== "undefined" ? window.location.origin : "";
+      setAlertStatus(`Sending ${pending.length} alert(s)…`);
+      const delivered = await sendAlerts(pending, alerts, site);
+      if (cancelled || seq !== scanSeq.current) return;
+      markSent(delivered);
+      const deliveredSet = new Set(delivered);
+      const sent = pending.filter((p) => deliveredSet.has(p.key));
+      if (sent.length) {
+        setAlertLog((prev) => [
+          ...sent.map((a) => ({
+            id: a.key,
+            at: new Date(),
+            text: `${a.event.emoji} ${a.row.symbol} ${a.row.grade} · ${a.event.label} (${a.pairing === "A" ? "4H/15m" : "1H/5m"})`,
+          })),
+          ...prev,
+        ].slice(0, 30));
+      }
+      const failed = pending.length - sent.length;
+      setAlertStatus(failed ? `Sent ${sent.length}, ${failed} failed — will retry next scan` : `Sent ${sent.length} alert(s)`);
+    })();
+    return () => { cancelled = true; };
+  }, [rowsA, rowsB, alerts, barsMap.length]);
+
+  // Optional auto-rescan so the browser keeps watching without you clicking.
+  useEffect(() => {
+    if (!autoScan) return;
+    const id = setInterval(() => { if (!loading) scan(); }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [autoScan, loading, scan]);
+
+  const sendTestAlert = useCallback(async () => {
+    setAlertStatus("Sending test…");
+    const sample = rowsA.find((r) => r.setupReady) || rowsB.find((r) => r.setupReady);
+    try {
+      const site = typeof window !== "undefined" ? window.location.origin : "";
+      const embed = sample
+        ? buildEmbed({ event: ALERT_EVENTS.entry, row: sample, pairing: "A" }, site)
+        : { title: "🎯 Paldo test alert", description: "Alerts are wired up correctly. Real alerts will look like this, with entry, stop, TP1, TP2, POI and the reasons behind the grade.", color: 0x4c8dff };
+      const r = await fetch("/api/discord", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ webhook: alerts.webhook || undefined, embeds: [embed] }),
+      });
+      const data = await r.json().catch(() => ({}));
+      setAlertStatus(r.ok ? "Test alert sent — check your Discord channel." : `Failed: ${data.error || r.status}`);
+    } catch (e) {
+      setAlertStatus(`Failed: ${e.message || e}`);
+    }
+  }, [alerts.webhook, rowsA, rowsB]);
   // Lookup so an expanded row can pull its own entry-timeframe candles for
   // the position chart, without re-fetching — barsMap already has them.
   const barsBySymbol = useMemo(() => {
@@ -253,8 +346,95 @@ export default function Dashboard() {
         <button className="btn primary" onClick={scan} disabled={loading}>
           {loading ? "Scanning…" : "↻ Scan"}
         </button>
+        <button
+          className={`btn${alerts.enabled ? " alert-on" : ""}`}
+          onClick={() => setAlertsOpen((v) => !v)}
+          title="Discord alerts for entry, TP1, TP2 and stop"
+        >
+          {alerts.enabled ? "🔔" : "🔕"} Alerts{alerts.enabled ? ` · ${alerts.minGrade}+` : ""}
+        </button>
         <div className="statusline">{statusLine}</div>
       </div>
+
+      {alertsOpen ? (
+        <div className="filterbar">
+          <div className="filterbar-head">
+            <span className="filter-title">Discord alerts</span>
+            <span className="filter-sub">
+              fires once per setup, per event — watches both timeframe pairings, ignores the table filters
+            </span>
+            <button className="btn" style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }} onClick={() => setAlertsOpen(false)}>
+              Close
+            </button>
+          </div>
+
+          <div className="filter-row" style={{ marginBottom: 10 }}>
+            <label className="ck">
+              <input type="checkbox" checked={alerts.enabled} onChange={(e) => updateAlerts({ enabled: e.target.checked })} />
+              Enable alerts
+            </label>
+            <label className="ck" title="Re-scan every 5 minutes so alerts keep firing while this tab stays open">
+              <input type="checkbox" checked={autoScan} onChange={(e) => setAutoScan(e.target.checked)} />
+              Auto-rescan every 5 min
+            </label>
+            <span className="filter-val" style={{ minWidth: 0 }}>Minimum grade</span>
+            <div className="seg">
+              {["A+", "A", "B"].map((g) => (
+                <button key={g} className={alerts.minGrade === g ? "active" : ""} onClick={() => updateAlerts({ minGrade: g })}>
+                  {g === "B" ? "All (B+)" : `${g} and up`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="filter-row" style={{ marginBottom: 10 }}>
+            {Object.values(ALERT_EVENTS).map((ev) => (
+              <label key={ev.key} className={`filter-chip${alerts.events[ev.key] ? " on" : ""}`} style={{ cursor: "pointer" }}>
+                <span className="ck" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!alerts.events[ev.key]}
+                    onChange={(e) => updateAlerts({ events: { [ev.key]: e.target.checked } })}
+                  />
+                  {ev.emoji} {ev.label}
+                </span>
+              </label>
+            ))}
+          </div>
+
+          <div className="filter-row">
+            <input
+              type="password"
+              className="webhook-input"
+              placeholder="Discord webhook URL (https://discord.com/api/webhooks/…)"
+              value={alerts.webhook}
+              onChange={(e) => updateAlerts({ webhook: e.target.value.trim() })}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <button className="btn" onClick={sendTestAlert}>Send test</button>
+            <button className="btn" onClick={() => { clearLedger(); setAlertLog([]); setAlertStatus("Alert history cleared — setups can alert again."); }}>
+              Reset history
+            </button>
+            {alertStatus ? <span className="filter-hidden">{alertStatus}</span> : null}
+          </div>
+
+          <div className="alert-help">
+            In Discord: <b>Server Settings → Integrations → Webhooks → New Webhook</b>, pick the channel, then <b>Copy Webhook URL</b>. It's stored in this browser only. Alternatively set <code>DISCORD_WEBHOOK_URL</code> in the Cloudflare Pages environment and leave this blank.
+            {" "}Alerts only fire while this tab is open — turn on auto-rescan to keep it working in the background.
+          </div>
+
+          {alertLog.length ? (
+            <div className="alert-log">
+              {alertLog.map((l) => (
+                <div key={l.id + l.at.getTime()} className="alert-log-row">
+                  <span className="alert-log-time">{l.at.toLocaleTimeString()}</span> {l.text}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="filterbar">
         <div className="filterbar-head">
@@ -326,7 +506,7 @@ export default function Dashboard() {
       />
 
       <div className="foot">
-        <b>How to read it:</b> The table shows Asset, Price, Chg%, Bias, Entry, Stop, TP1, TP2 and POI — expand a row (▸) for the full breakdown: the annotated Position chart, the Sweep/MSS/Breaker/FVG checklist, the ADX / Volatility / Volume readings, bars since MSS, and Still catchable. <b>Why two targets:</b> taking the whole position to the next liquidity pool meant a reward-to-risk that swung with however far that pool happened to sit — often 4–5R, which reads well but rarely fills. Fixed <b>TP1 at 1:1</b> and <b>TP2 at 1:2</b> are far likelier to actually be reached; scale out at TP1 and the rest runs risk-free. The <b>POI</b> column is context, not an exit: it's the next unswept liquidity on the bias timeframe, with its distance in R — comfortably beyond TP2 means the runner has room, closer than TP2 means price may stall before it. <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row shows Entry/Stop/TP1/TP2 as soon as the lower-TF checklist completes and agrees with the higher-TF bias — that's the whole of <b>{STRAT.name}</b>. <b>ADX, Volatility and Volume are filters, not conditions:</b> leave them off to see every valid setup, or switch one on to narrow the list; the count of setups a filter is hiding is always shown next to them. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the expanded R:R). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
+        <b>How to read it:</b> The table shows Asset, Price, Chg%, Bias, Entry, Stop, TP1, TP2 and POI — expand a row (▸) for the full breakdown: the annotated Position chart, the Sweep/MSS/Breaker/FVG checklist, the ADX / Volatility / Volume readings, bars since MSS, and Still catchable. <b>Why two targets:</b> taking the whole position to the next liquidity pool meant a reward-to-risk that swung with however far that pool happened to sit — often 4–5R, which reads well but rarely fills. Fixed <b>TP1 at 1:1</b> and <b>TP2 at 1:2</b> are far likelier to actually be reached; scale out at TP1 and the rest runs risk-free. The <b>POI</b> column is context, not an exit: it's the next unswept liquidity on the bias timeframe, with its distance in R — comfortably beyond TP2 means the runner has room, closer than TP2 means price may stall before it. <b>Grade</b> scores structural quality out of 11 — room to TP2 (3), trend strength (2), MSS participation (2), freshness (2), volatility (1), breaker candidate (1) — where <b>A+</b> is 8+, <b>A</b> is 5–7 and <b>B</b> is below 5. Timing is deliberately excluded, so a grade doesn't flicker as price wanders; expand a row to see exactly which factors earned or lost points. Use <b>🔔 Alerts</b> to have entry, TP1, TP2 and stop pushed to Discord as they happen. <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row shows Entry/Stop/TP1/TP2 as soon as the lower-TF checklist completes and agrees with the higher-TF bias — that's the whole of <b>{STRAT.name}</b>. <b>ADX, Volatility and Volume are filters, not conditions:</b> leave them off to see every valid setup, or switch one on to narrow the list; the count of setups a filter is hiding is always shown next to them. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the expanded R:R). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
         <br /><br />
         <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
       </div>
@@ -392,6 +572,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
               <th>Asset</th>
               <th>Price</th>
               <th>Chg%</th>
+              <th title="Structural quality of the setup — expand a row to see why">Grade</th>
               <th>{higherLabel} Bias</th>
               <th>Entry</th>
               <th>Stop</th>
@@ -402,7 +583,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
           </thead>
           <tbody>
             {view.length === 0 ? (
-              <tr><td colSpan={10} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
+              <tr><td colSpan={11} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
             ) : (
               view.map((r) => {
                 const biasCls = r.biasHigh === "long" ? "up" : r.biasHigh === "short" ? "down" : "no";
@@ -480,6 +661,12 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
         <td className="num">{fmt(r.price, r.symbol)}</td>
         <td className="num" style={{ color: r.chg >= 0 ? "var(--long)" : "var(--short)" }}>{r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%</td>
         <td>
+          <GradeBadge
+            grade={r.grade}
+            title={r.quality ? `${r.quality.score}/${r.quality.max} — expand for the reasons` : ""}
+          />
+        </td>
+        <td>
           {r.biasHigh === "long" ? <span className="pill long">▲ BULL</span>
             : r.biasHigh === "short" ? <span className="pill short">▼ BEAR</span>
             : <span className="pill flat">—</span>}
@@ -499,7 +686,25 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
       {isOpen ? (
         <tr className="expand-row">
           <td></td>
-          <td colSpan={9} style={{ whiteSpace: "normal", verticalAlign: "top" }}>
+          <td colSpan={10} style={{ whiteSpace: "normal", verticalAlign: "top" }}>
+            {r.quality ? (
+              <div className="why-card">
+                <div className="why-head">
+                  <GradeBadge grade={r.grade} />
+                  <span>setup — scored {r.quality.score} of {r.quality.max}</span>
+                </div>
+                <div className="why-list">
+                  {r.quality.reasons.map((why) => (
+                    <div key={why.key} className={`why-row ${why.tone}`}>
+                      <span className="why-mark">{why.tone === "strong" ? "✓" : why.tone === "weak" ? "✗" : "~"}</span>
+                      <span className="why-label">{why.label}</span>
+                      <span className="why-detail">{why.detail}</span>
+                      <span className="why-score">{why.score}/{why.max}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="three-col" style={{ padding: "8px 0 14px" }}>
               <div className="chart-panel" style={{ margin: 0 }}>
                 <div className="pos-head">
