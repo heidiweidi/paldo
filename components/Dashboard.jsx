@@ -17,6 +17,19 @@ function GradeBadge({ grade, title }) {
   return <span className={`grade ${GRADE_CLS[grade] || ""}`} title={title}>{grade}</span>;
 }
 
+// A setup that already hit TP2 or got invalidated has fully played out — it's
+// history, not something to act on. tp1_hit is deliberately excluded: the
+// runner is still open, so that's still a live position.
+const PLAYED_OUT_WINDOWS = new Set(["tp2_hit", "invalidated"]);
+const PLAYED_OUT_LABEL = { tp2_hit: "PLAYED OUT", invalidated: "INVALIDATED" };
+function isPlayedOut(r) {
+  return !!(r?.setupReady && PLAYED_OUT_WINDOWS.has(r.entryWindow));
+}
+function PlayedOutBadge({ window }) {
+  const cls = window === "invalidated" ? "short" : "flat";
+  return <span className={`pill ${cls} played-out-badge`}>{PLAYED_OUT_LABEL[window]}</span>;
+}
+
 async function jget(url) {
   const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) throw new Error(String(r.status));
@@ -630,9 +643,10 @@ function FilterStat({ label, f, render }) {
 
 function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onToggle, lowerBars }) {
   const ck = (v) => (v ? <span className="pill long">✓</span> : <span className="pill flat">—</span>);
+  const playedOut = isPlayedOut(r);
   return (
     <>
-      <tr>
+      <tr className={playedOut ? "row-played-out" : ""}>
         <td>
           <button
             className="btn"
@@ -657,6 +671,7 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
             <span className="open-ico">↗</span>
           </a>
           <span className="mk">{r.mkt === "crypto" ? "CRYPTO" : "FX"}</span>
+          {playedOut ? <PlayedOutBadge window={r.entryWindow} /> : null}
         </td>
         <td className="num">{fmt(r.price, r.symbol)}</td>
         <td className="num" style={{ color: r.chg >= 0 ? "var(--long)" : "var(--short)" }}>{r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%</td>
@@ -687,6 +702,13 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
         <tr className="expand-row">
           <td></td>
           <td colSpan={10} style={{ whiteSpace: "normal", verticalAlign: "top" }}>
+            {playedOut ? (
+              <div className="notice played-out-banner">
+                {r.entryWindow === "tp2_hit"
+                  ? "⚑ This setup already ran its full course — price hit TP1 and TP2 before this scan. It's kept here for reference, not as something to act on. A new entry will only appear once a fresh Sweep → MSS → FVG chain forms."
+                  : "⚑ This setup was invalidated — price traded through the stop before entry could be caught. It's dead; don't chase it. A new entry needs a fresh Sweep → MSS → FVG chain."}
+              </div>
+            ) : null}
             {r.quality ? (
               <div className="why-card">
                 <div className="why-head">

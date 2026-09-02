@@ -49,6 +49,19 @@ const ENTRY_WINDOW_NOTE = {
   invalidated: "Price has already traded through the stop — this setup is dead, don't chase it.",
 };
 
+// A setup that's already hit TP2 or been invalidated is purely historical —
+// still shown for reference, but flagged so it's not mistaken for a live
+// opportunity. Mirrors the same helper in Dashboard.jsx.
+const PLAYED_OUT_WINDOWS = new Set(["tp2_hit", "invalidated"]);
+const PLAYED_OUT_LABEL = { tp2_hit: "PLAYED OUT", invalidated: "INVALIDATED" };
+function isPlayedOut(m) {
+  return !!(m?.setupReady && PLAYED_OUT_WINDOWS.has(m.entryWindow));
+}
+function PlayedOutBadge({ window }) {
+  const cls = window === "invalidated" ? "short" : "flat";
+  return <span className={`pill ${cls} played-out-badge`}>{PLAYED_OUT_LABEL[window]}</span>;
+}
+
 // Plain-English readout: higher-TF bias for context, lower-TF checklist as the entry trigger.
 function narrative(m, p) {
   if (!m) return "";
@@ -165,6 +178,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
       <div className="detail-title">
         <h1>{symbol} <span className="mk">{mkt === "crypto" ? "CRYPTO" : "FOREX/GOLD"}</span></h1>
         {m && state === "ok" ? <span className={`pill ${biasClass}`}>{biasLabel}</span> : null}
+        {m && state === "ok" && isPlayedOut(m) ? <PlayedOutBadge window={m.entryWindow} /> : null}
         {m && state === "ok" ? (
           <div className="price-now">
             {fmt(m.price, symbol)}{" "}
@@ -188,6 +202,13 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
 
           <div style={{ marginBottom: 16 }}>
             <div className="idea-h">{STRAT.title} — {p.title}</div>
+            {isPlayedOut(m) ? (
+              <div className="notice played-out-banner">
+                {m.entryWindow === "tp2_hit"
+                  ? "⚑ This setup already ran its full course — price hit TP1 and TP2 before this check. It's kept here for reference, not as something to act on. A new entry will only appear once a fresh Sweep → MSS → FVG chain forms."
+                  : "⚑ This setup was invalidated — price traded through the stop before entry could be caught. It's dead; don't chase it. A new entry needs a fresh Sweep → MSS → FVG chain."}
+              </div>
+            ) : null}
             <p className="idea-text" style={{ marginBottom: 6 }}>{idea}</p>
             <a className="tv-ext" href={tvUrl(mkt, symbol, chartTf)} target="_blank" rel="noreferrer">
               Open full chart on TradingView ↗
