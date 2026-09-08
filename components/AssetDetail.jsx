@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { FOREX } from "@/lib/universe";
-import { analyzeMTF, to4h, STRATEGIES } from "@/lib/indicators";
+import { analyzeMTF, to4h, STRATEGIES, STRATEGY_VERSIONS, DEFAULT_STRATEGY_VERSION } from "@/lib/indicators";
 import { tvSymbol, TV_INTERVAL, tvUrl } from "@/lib/symbols";
 import TradingViewChart from "@/components/TradingViewChart";
 import PositionChart from "@/components/PositionChart";
@@ -78,6 +78,11 @@ function narrative(m, p) {
     parts.push(`${p.lowerLabel} has its own reversal in progress, but it's ${m.biasLow === "long" ? "bullish" : "bearish"} — opposite the ${p.higherLabel} bias, so this isn't a valid entry trigger yet.`);
   } else if (!m.checklist?.fvg) {
     parts.push(`${p.lowerLabel} is aligned with the ${p.higherLabel} bias (Sweep + MSS confirmed), but no Fair Value Gap has formed yet in the ${p.lowerLabel} reversal leg — no entry until one does.`);
+  } else if (!m.setupReady) {
+    // Only reachable under Strat#5 v1.1: the lower-TF checklist is complete
+    // and aligned, but the higher-TF bias swept a weaker pivot rather than
+    // the strong low/high in the window — v1.0 would call this ready.
+    parts.push(`${p.lowerLabel} is aligned and its own Sweep→MSS→FVG checklist is complete, but under Strat#5 v1.1 the ${p.higherLabel} bias swept a weaker pivot, not the strong low/high in this window — so it isn't counted as a valid v1.1 entry. Switch to v1.0 to treat it as a signal, or wait for a fresh sweep off the real extreme.`);
   } else {
     parts.push(
       `${p.lowerLabel} is aligned and complete: Sweep → MSS → FVG all confirmed, ${m.barsAgo != null ? `${m.barsAgo} bar(s) since the ${p.lowerLabel} MSS` : ""}. Entry sits mid-gap at ${fmt(m.entry, m.symbol)}, stop beyond the ${p.lowerLabel} sweep at ${fmt(m.stop, m.symbol)}. Scale out at TP1 ${fmt(m.tp1, m.symbol)} (1:1) to de-risk, and let the rest run to TP2 ${fmt(m.tp2, m.symbol)} (1:2).`
@@ -105,6 +110,10 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
   const [bars, setBars] = useState(null); // { "4h", "1h", "15m", "5m" }
   const [state, setState] = useState("loading"); // loading | ok | error
   const [logged, setLogged] = useState(false); // quick-add-to-journal feedback
+  // v1.1 additionally requires the higher-TF bias to have swept a strong
+  // low/high (the most extreme swing in the lookback window) — see the
+  // toggle's tooltip and the footer for detail.
+  const [strategyVersion, setStrategyVersion] = useState(DEFAULT_STRATEGY_VERSION);
 
   const load = useCallback(async () => {
     setState("loading");
@@ -147,10 +156,10 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
   const results = useMemo(() => {
     if (!bars) return null;
     return {
-      A: analyzeMTF(symbol, mkt, bars["4h"], bars["15m"]),
-      B: analyzeMTF(symbol, mkt, bars["1h"], bars["5m"]),
+      A: analyzeMTF(symbol, mkt, bars["4h"], bars["15m"], undefined, strategyVersion),
+      B: analyzeMTF(symbol, mkt, bars["1h"], bars["5m"], undefined, strategyVersion),
     };
-  }, [bars, symbol, mkt]);
+  }, [bars, symbol, mkt, strategyVersion]);
 
   const p = PAIRINGS[pairing];
   const m = results ? results[pairing] : null;
@@ -181,6 +190,13 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
         <div className="seg">
           <button className={chartView === "lower" ? "active" : ""} onClick={() => setChartView("lower")}>{p.lowerLabel} (entry)</button>
           <button className={chartView === "higher" ? "active" : ""} onClick={() => setChartView("higher")}>{p.higherLabel} (bias)</button>
+        </div>
+        <div className="seg" title="Strat#5 version — v1.1 additionally requires the higher-TF bias to have swept a strong (most extreme) low/high, not just any pivot">
+          {Object.values(STRATEGY_VERSIONS).map((v) => (
+            <button key={v.id} className={strategyVersion === v.id ? "active" : ""} onClick={() => setStrategyVersion(v.id)} title={v.short}>
+              {v.label}
+            </button>
+          ))}
         </div>
         <Link href="/journal" className="back" style={{ marginLeft: "auto" }}>📓 Journal</Link>
         <span className="filter-title">{STRAT.name}</span>
@@ -297,6 +313,11 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
 
             <div className="stats-card col-half">
               <Stat label={`${p.higherLabel} Bias`} value={m.biasHigh ? (m.biasHigh === "long" ? "Bullish" : "Bearish") : "—"} cls={biasClass} />
+              <Stat
+                label={`${p.higherLabel} Strong pivot${strategyVersion === "v1.1" ? " (v1.1 gate)" : ""}`}
+                value={m.biasHigh ? (m.strongPivot ? "✓ strong low/high" : "✗ weaker pivot") : "—"}
+                cls={m.biasHigh ? (m.strongPivot ? "long" : "short") : ""}
+              />
               <Stat label={`${p.lowerLabel} Sweep`} value={m.checklist?.sweep ? "✓ confirmed" : "—"} cls={m.checklist?.sweep ? biasClass : ""} />
               <Stat label={`${p.lowerLabel} Market Structure Shift`} value={m.checklist?.mss ? "✓ confirmed" : "—"} cls={m.checklist?.mss ? biasClass : ""} />
               <Stat label={`${p.lowerLabel} / ${p.higherLabel} Aligned`} value={m.biasLow ? (m.aligned ? "✓ yes" : "✗ no") : "—"} cls={m.aligned ? biasClass : m.biasLow ? "short" : ""} />
@@ -349,6 +370,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
       ) : null}
 
       <div className="foot">
+        <b>v1.0 vs v1.1:</b> v1.0 treats any confirmed Sweep→MSS on the bias timeframe as valid. <b>v1.1</b> additionally requires that sweep to have taken out the <b>strong low/high</b> — the single most extreme swing in the lookback window — filtering out reversals off minor, insignificant pivots. The lower-TF entry checklist is unchanged between versions; only which higher-TF bias counts changes. See the <b>Strong pivot</b> stat above.{" "}
         <b>{STRAT.name}</b> — {STRAT.short}, entry sized to 1:2 R:R. Liquidity Sweep, MSS, and FVG are computed from the data above; Breaker Block is a candidate only — confirm it, and the overall pattern, visually before acting. ADX, Volatility and Volume are shown here purely as context: they're optional filters in the scanner and never decide whether a setup exists. The price pane is left unobstructed for reading structure, with Stochastic RSI and MACD in panes below. Exits are scaled — <b>TP1 at 1:1</b> to bank half and move the stop to break-even, <b>TP2 at 1:2</b> for the remainder — chosen over targeting the liquidity pool directly because a fixed 1R is far likelier to fill than a pool that might sit 4–5R away. The <b>POI</b> is marked as context for where price is drawn next, not as an exit.{" "}
         Educational signal simulation on live public data — <b>not financial advice</b>. Confirm on the chart before acting.
       </div>

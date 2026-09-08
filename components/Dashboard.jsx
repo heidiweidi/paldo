@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CRYPTO, FOREX } from "@/lib/universe";
-import { analyzeMTF, to4h, STRATEGIES, DEFAULT_FILTERS } from "@/lib/indicators";
+import { analyzeMTF, to4h, STRATEGIES, DEFAULT_FILTERS, STRATEGY_VERSIONS, DEFAULT_STRATEGY_VERSION } from "@/lib/indicators";
 import PositionChart from "@/components/PositionChart";
 import {
   ALERT_EVENTS, DEFAULT_ALERT_SETTINGS, loadSettings, saveSettings,
@@ -105,6 +105,11 @@ export default function Dashboard() {
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const setFilter = (key, patch) =>
     setFilters((f) => ({ ...f, [key]: { ...f[key], ...patch } }));
+  // Strat#5 version — v1.1 additionally requires the higher-TF bias to have
+  // swept a *strong* low/high (the most extreme swing in the lookback
+  // window), not just any qualifying pivot. Unlike ADX/Volatility/Volume,
+  // this is a real gate, not a filter — it changes what counts as ready.
+  const [strategyVersion, setStrategyVersion] = useState(DEFAULT_STRATEGY_VERSION);
   // Crypto universe: either the curated fixed list in lib/universe.js, or
   // the top N coins by market cap pulled live from CoinGecko. Forex/gold
   // always comes from the fixed FOREX list — CoinGecko is crypto-only.
@@ -226,12 +231,12 @@ export default function Dashboard() {
   // Re-scored from barsMap whenever a filter changes — no re-fetch. Both
   // pairings (4H→15m and 1H→5m) get the same strategy and the same filters.
   const rowsA = useMemo(
-    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b4h, x.b15m, filters)).filter(Boolean),
-    [barsMap, filters]
+    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b4h, x.b15m, filters, strategyVersion)).filter(Boolean),
+    [barsMap, filters, strategyVersion]
   );
   const rowsB = useMemo(
-    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b1h, x.b5m, filters)).filter(Boolean),
-    [barsMap, filters]
+    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b1h, x.b5m, filters, strategyVersion)).filter(Boolean),
+    [barsMap, filters, strategyVersion]
   );
   const readyCount = useMemo(
     () =>
@@ -331,6 +336,13 @@ export default function Dashboard() {
           {["all", "crypto", "forex"].map((m) => (
             <button key={m} className={mkt === m ? "active" : ""} onClick={() => setMkt(m)}>
               {m === "all" ? "All" : m === "crypto" ? "Crypto" : "Forex/Gold"}
+            </button>
+          ))}
+        </div>
+        <div className="seg" title="Strat#5 version — v1.1 additionally requires the higher-TF bias to have swept a strong (most extreme) low/high, not just any pivot">
+          {Object.values(STRATEGY_VERSIONS).map((v) => (
+            <button key={v.id} className={strategyVersion === v.id ? "active" : ""} onClick={() => setStrategyVersion(v.id)} title={v.short}>
+              Strat#5 {v.label}
             </button>
           ))}
         </div>
@@ -522,6 +534,8 @@ export default function Dashboard() {
 
       <div className="foot">
         <b>How to read it:</b> The table shows Asset, Price, Chg%, Bias, Entry, Stop, TP1, TP2 and POI — expand a row (▸) for the full breakdown: the annotated Position chart, the Sweep/MSS/Breaker/FVG checklist, the ADX / Volatility / Volume readings, bars since MSS, and Still catchable. <b>Why two targets:</b> taking the whole position to the next liquidity pool meant a reward-to-risk that swung with however far that pool happened to sit — often 4–5R, which reads well but rarely fills. Fixed <b>TP1 at 1:1</b> and <b>TP2 at 1:2</b> are far likelier to actually be reached; scale out at TP1 and the rest runs risk-free. The <b>POI</b> column is context, not an exit: it's the next unswept liquidity on the bias timeframe, with its distance in R — comfortably beyond TP2 means the runner has room, closer than TP2 means price may stall before it. <b>Grade</b> scores structural quality out of 11 — room to TP2 (3), trend strength (2), MSS participation (2), freshness (2), volatility (1), breaker candidate (1) — where <b>A+</b> is 8+, <b>A</b> is 5–7 and <b>B</b> is below 5. Timing is deliberately excluded, so a grade doesn't flicker as price wanders; expand a row to see exactly which factors earned or lost points. Use <b>🔔 Alerts</b> to have entry, TP1, TP2 and stop pushed to Discord as they happen. <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row shows Entry/Stop/TP1/TP2 as soon as the lower-TF checklist completes and agrees with the higher-TF bias — that's the whole of <b>{STRAT.name}</b>. <b>ADX, Volatility and Volume are filters, not conditions:</b> leave them off to see every valid setup, or switch one on to narrow the list; the count of setups a filter is hiding is always shown next to them. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the expanded R:R). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
+        <br /><br />
+        <b>Strat#5 v1.0 vs v1.1:</b> v1.0 treats any confirmed Sweep→MSS on the bias timeframe as valid. <b>v1.1</b> additionally requires that sweep to have taken out a <b>strong low/high</b> — the single most extreme swing in the lookback window, not just a minor pivot along the way — filtering out reversals off insignificant liquidity. The lower-TF entry checklist (Sweep→MSS→FVG) is identical either way; v1.1 only tightens which higher-TF bias counts. Expand a row and check <b>Strong pivot</b> to see which one it was.
         <br /><br />
         <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
       </div>
@@ -796,6 +810,15 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
                   <div className="stat-v">
                     {r.biasLow ? (r.aligned ? "✓ yes" : "✗ no") : "—"}
                     {r.biasHigh && !r.aligned ? <small style={{ marginLeft: 6, color: "var(--muted)" }}>{lowerLabel} not aligned</small> : null}
+                  </div>
+                </div>
+                <div className="stat">
+                  <div className="stat-k">
+                    {higherLabel} Strong pivot
+                    {r.strategyVersion === "v1.1" ? <span className="filter-tag">v1.1 gate</span> : null}
+                  </div>
+                  <div className="stat-v" title="Was the swept low/high the most extreme swing in the lookback window, or just a minor pivot?">
+                    {ck(r.strongPivot)}
                   </div>
                 </div>
                 <div className="stat"><div className="stat-k">{lowerLabel} Sweep</div><div className="stat-v">{ck(r.checklist?.sweep)}</div></div>
