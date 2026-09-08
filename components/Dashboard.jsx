@@ -8,6 +8,7 @@ import {
   ALERT_EVENTS, DEFAULT_ALERT_SETTINGS, loadSettings, saveSettings,
   collectAlerts, markSent, sendAlerts, buildEmbed, clearLedger,
 } from "@/lib/alerts";
+import { addJournalEntry, newEntryFromSetup } from "@/lib/journal";
 
 const STRAT = STRATEGIES.strat5;
 
@@ -366,6 +367,7 @@ export default function Dashboard() {
         >
           {alerts.enabled ? "🔔" : "🔕"} Alerts{alerts.enabled ? ` · ${alerts.minGrade}+` : ""}
         </button>
+        <a className="btn" href="/journal" title="Your log of trades actually taken">📓 Journal</a>
         <div className="statusline">{statusLine}</div>
       </div>
 
@@ -644,6 +646,15 @@ function FilterStat({ label, f, render }) {
 function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onToggle, lowerBars }) {
   const ck = (v) => (v ? <span className="pill long">✓</span> : <span className="pill flat">—</span>);
   const playedOut = isPlayedOut(r);
+  // Quick-add to the trade journal: snapshots this setup as it stands right
+  // now (see newEntryFromSetup in lib/journal.js) — the journal never
+  // re-reads live prices, so it's a record of what you actually saw and took.
+  const [logged, setLogged] = useState(false);
+  const logTrade = () => {
+    addJournalEntry(newEntryFromSetup(r, pairingKey));
+    setLogged(true);
+    setTimeout(() => setLogged(false), 2000);
+  };
   return (
     <>
       <tr className={playedOut ? "row-played-out" : ""}>
@@ -738,6 +749,14 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
                       <span className="pos-badge target">TP1 {fmt(r.tp1, r.symbol)}</span>
                       <span className="pos-badge target">TP2 {fmt(r.tp2, r.symbol)}</span>
                       {r.poi != null ? <span className="pos-badge poi">POI {fmt(r.poi, r.symbol)}</span> : null}
+                      <button
+                        className="btn"
+                        style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }}
+                        onClick={logTrade}
+                        title="Snapshot this setup into your trade journal"
+                      >
+                        {logged ? "✓ Logged" : "📓 Log trade"}
+                      </button>
                     </>
                   ) : (
                     <small style={{ color: "var(--muted)" }}>checklist not complete yet</small>

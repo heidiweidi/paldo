@@ -7,6 +7,7 @@ import { analyzeMTF, to4h, STRATEGIES } from "@/lib/indicators";
 import { tvSymbol, TV_INTERVAL, tvUrl } from "@/lib/symbols";
 import TradingViewChart from "@/components/TradingViewChart";
 import PositionChart from "@/components/PositionChart";
+import { addJournalEntry, newEntryFromSetup } from "@/lib/journal";
 
 const STRAT = STRATEGIES.strat5;
 const GRADE_CLS = { "A+": "grade-aplus", A: "grade-a", B: "grade-b" };
@@ -103,6 +104,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
   const [chartView, setChartView] = useState("lower"); // "lower" (entry) | "higher" (bias)
   const [bars, setBars] = useState(null); // { "4h", "1h", "15m", "5m" }
   const [state, setState] = useState("loading"); // loading | ok | error
+  const [logged, setLogged] = useState(false); // quick-add-to-journal feedback
 
   const load = useCallback(async () => {
     setState("loading");
@@ -159,6 +161,15 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
   const biasClass = m && m.biasHigh === "long" ? "long" : m && m.biasHigh === "short" ? "short" : "flat";
   const biasLabel = m && m.biasHigh === "long" ? `▲ BULLISH REVERSAL (${p.higherLabel})` : m && m.biasHigh === "short" ? `▼ BEARISH REVERSAL (${p.higherLabel})` : "NO REVERSAL IN PROGRESS";
 
+  // Quick-add to the trade journal — snapshots this setup as it stands right
+  // now. See RowGroup's logTrade in Dashboard.jsx for the same pattern.
+  const logTrade = () => {
+    if (!m) return;
+    addJournalEntry(newEntryFromSetup(m, pairing));
+    setLogged(true);
+    setTimeout(() => setLogged(false), 2000);
+  };
+
   return (
     <div className="wrap">
       <div className="detail-head">
@@ -171,7 +182,8 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
           <button className={chartView === "lower" ? "active" : ""} onClick={() => setChartView("lower")}>{p.lowerLabel} (entry)</button>
           <button className={chartView === "higher" ? "active" : ""} onClick={() => setChartView("higher")}>{p.higherLabel} (bias)</button>
         </div>
-        <span className="filter-title" style={{ marginLeft: "auto" }}>{STRAT.name}</span>
+        <Link href="/journal" className="back" style={{ marginLeft: "auto" }}>📓 Journal</Link>
+        <span className="filter-title">{STRAT.name}</span>
         {m?.grade ? <span className={`grade ${GRADE_CLS[m.grade] || ""}`}>{m.grade}</span> : null}
       </div>
 
@@ -245,6 +257,14 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
                     <span className="pos-badge target">TP1 {fmt(m.tp1, symbol)}</span>
                     <span className="pos-badge target">TP2 {fmt(m.tp2, symbol)}</span>
                     {m.poi != null ? <span className="pos-badge poi">POI {fmt(m.poi, symbol)}</span> : null}
+                    <button
+                      className="btn"
+                      style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }}
+                      onClick={logTrade}
+                      title="Snapshot this setup into your trade journal"
+                    >
+                      {logged ? "✓ Logged" : "📓 Log trade"}
+                    </button>
                   </>
                 ) : (
                   <small style={{ color: "var(--muted)" }}>checklist not complete yet</small>
