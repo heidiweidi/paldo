@@ -13,15 +13,15 @@
     "deploy": "npm run pages:build && npx wrangler pages deploy .vercel/output/static"
   },
   "dependencies": {
-    "lightweight-charts": "^5.0.0",
+    "lightweight-charts": "^5.2.1",
     "next": "14.2.5",
     "next-auth": "5.0.0-beta.20",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
   "devDependencies": {
-    "@cloudflare/next-on-pages": "^1.13.15",
-    "vercel": "^65.7.0",
+    "@cloudflare/next-on-pages": "1.13.2",
+    "vercel": "37.4.2",
     "wrangler": "3.72.0"
   }
 }
