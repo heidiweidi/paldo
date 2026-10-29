@@ -9,8 +9,11 @@ import {
   collectAlerts, markSent, sendAlerts, buildEmbed, clearLedger,
 } from "@/lib/alerts";
 import { addJournalEntry, newEntryFromSetup } from "@/lib/journal";
+import { SHOW_PAIRING_TABS, SHOW_STRATEGY_VERSION_TOGGLE } from "@/lib/uiFlags";
 
 const STRAT = STRATEGIES.strat5;
+
+const withSrc = (row, src) => (row && src ? { ...row, src } : row);
 
 const GRADE_CLS = { "A+": "grade-aplus", A: "grade-a", B: "grade-b" };
 function GradeBadge({ grade, title }) {
@@ -29,6 +32,16 @@ function isPlayedOut(r) {
 function PlayedOutBadge({ window }) {
   const cls = window === "invalidated" ? "short" : "flat";
   return <span className={`pill ${cls} played-out-badge`}>{PLAYED_OUT_LABEL[window]}</span>;
+}
+
+// Runs `fn` over `items` with at most `limit` in flight. Used for Bitunix, which throttles bursts.
+async function pool(items, limit, fn) {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) await fn(items[next++]);
+    })
+  );
 }
 
 async function jget(url) {
@@ -110,10 +123,11 @@ export default function Dashboard() {
   // window), not just any qualifying pivot. Unlike ADX/Volatility/Volume,
   // this is a real gate, not a filter — it changes what counts as ready.
   const [strategyVersion, setStrategyVersion] = useState(DEFAULT_STRATEGY_VERSION);
-  // Crypto universe: either the curated fixed list in lib/universe.js, or
-  // the top N coins by market cap pulled live from CoinGecko. Forex/gold
-  // always comes from the fixed FOREX list — CoinGecko is crypto-only.
-  const [universe, setUniverse] = useState("curated"); // "curated" | "coingecko"
+  // Crypto universe: the curated fixed list in lib/universe.js, the top N
+  // coins by market cap from CoinGecko, or the most traded USDT perpetuals on
+  // Bitunix (scanned with Bitunix's own candles). Forex/gold always comes from
+  // the fixed FOREX list.
+  const [universe, setUniverse] = useState("curated"); // "curated" | "coingecko" | "bitunix"
   const [coinCount, setCoinCount] = useState(50);
   // Raw bars per symbol — kept separate from analysis so changing a filter
   // re-scores instantly against already-fetched data instead of re-hitting
@@ -160,7 +174,21 @@ export default function Dashboard() {
     // that mode is selected, falling back to the curated list if the request
     // fails (rate-limited, network hiccup, etc.) rather than scanning nothing.
     let cryptoSymbols = CRYPTO;
-    if (universe === "coingecko") {
+    let cryptoSrc = "binance";
+    if (universe === "bitunix") {
+      setStatus("Fetching Bitunix coins…");
+      try {
+        const { coins } = await jget(`/api/bitunix?limit=${coinCount}`);
+        if (Array.isArray(coins) && coins.length) {
+          cryptoSymbols = coins.map((c) => c.symbol);
+          cryptoSrc = "bitunix";
+        } else {
+          noticeParts.push("Bitunix returned no coins — used the curated list instead.");
+        }
+      } catch {
+        noticeParts.push("Couldn't reach Bitunix — used the curated list instead.");
+      }
+    } else if (universe === "coingecko") {
       setStatus("Fetching top coins by market cap (CoinGecko)…");
       try {
         const { coins } = await jget(`/api/coingecko?limit=${coinCount}`);
@@ -179,23 +207,29 @@ export default function Dashboard() {
     tick();
     const collected = [];
 
-    await Promise.all(
-      cryptoSymbols.map(async (sym) => {
-        try {
-          const [{ bars: b4h }, { bars: b1h }, { bars: b15m }, { bars: b5m }] = await Promise.all([
+    const scanCrypto = async (sym) => {
+      try {
+        let b4h, b1h, b15m, b5m;
+        if (cryptoSrc === "bitunix") {
+          const { bars } = await jget(`/api/bitunix/klines?symbol=${encodeURIComponent(sym)}`);
+          ({ "4h": b4h, "1h": b1h, "15m": b15m, "5m": b5m } = bars);
+        } else {
+          [{ bars: b4h }, { bars: b1h }, { bars: b15m }, { bars: b5m }] = await Promise.all([
             jget(`/api/klines?symbol=${sym}&interval=4h&limit=300`),
             jget(`/api/klines?symbol=${sym}&interval=1h&limit=300`),
             jget(`/api/klines?symbol=${sym}&interval=15m&limit=300`),
             jget(`/api/klines?symbol=${sym}&interval=5m&limit=300`),
           ]);
-          collected.push({ sym, mkt: "crypto", b4h, b1h, b15m, b5m });
-        } catch {
-          fails.push(sym);
-        } finally {
-          done++; tick();
         }
-      })
-    );
+        collected.push({ sym, mkt: "crypto", src: cryptoSrc === "bitunix" ? "bitunix" : undefined, b4h, b1h, b15m, b5m });
+      } catch {
+        fails.push(sym);
+      } finally {
+        done++; tick();
+      }
+    };
+    if (cryptoSrc === "bitunix") await pool(cryptoSymbols, 2, scanCrypto);
+    else await Promise.all(cryptoSymbols.map(scanCrypto));
 
     await Promise.all(
       FOREX.map(async (o) => {
@@ -219,7 +253,7 @@ export default function Dashboard() {
     setLastUpdated(new Date());
     if (fails.length) {
       noticeParts.push(
-        `Couldn't load ${fails.length} symbol(s): ${fails.join(", ")}. The market source may have rate-limited momentarily, or a CoinGecko top coin isn't listed as a USDT pair on Binance — press Scan to retry.`
+        `Couldn't load ${fails.length} symbol(s): ${fails.join(", ")}. The market source may have rate-limited momentarily${cryptoSrc === "bitunix" ? "" : ", or a CoinGecko top coin isn't listed as a USDT pair on Binance"} — press Scan to retry.`
       );
     }
     if (noticeParts.length) setNotice(noticeParts.join(" "));
@@ -231,11 +265,11 @@ export default function Dashboard() {
   // Re-scored from barsMap whenever a filter changes — no re-fetch. Both
   // pairings (4H→15m and 1H→5m) get the same strategy and the same filters.
   const rowsA = useMemo(
-    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b4h, x.b15m, filters, strategyVersion)).filter(Boolean),
+    () => barsMap.map((x) => withSrc(analyzeMTF(x.sym, x.mkt, x.b4h, x.b15m, filters, strategyVersion), x.src)).filter(Boolean),
     [barsMap, filters, strategyVersion]
   );
   const rowsB = useMemo(
-    () => barsMap.map((x) => analyzeMTF(x.sym, x.mkt, x.b1h, x.b5m, filters, strategyVersion)).filter(Boolean),
+    () => barsMap.map((x) => withSrc(analyzeMTF(x.sym, x.mkt, x.b1h, x.b5m, filters, strategyVersion), x.src)).filter(Boolean),
     [barsMap, filters, strategyVersion]
   );
   const readyCount = useMemo(
@@ -339,6 +373,7 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
+        {SHOW_STRATEGY_VERSION_TOGGLE ? (
         <div className="seg" title="Strat#5 version — v1.1 additionally requires the higher-TF bias to have swept a strong (most extreme) low/high, not just any pivot">
           {Object.values(STRATEGY_VERSIONS).map((v) => (
             <button key={v.id} className={strategyVersion === v.id ? "active" : ""} onClick={() => setStrategyVersion(v.id)} title={v.short}>
@@ -346,21 +381,23 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
-        <div className="seg" title="Which coins to scan — a fixed curated list, or the current top N by market cap from CoinGecko">
+        ) : null}
+        <div className="seg" title="Which coins to scan: a fixed curated list, the top N by market cap from CoinGecko, or the most traded USDT perpetuals on Bitunix (scanned with Bitunix's own candles)">
           {[
             { key: "curated", label: "Curated list" },
             { key: "coingecko", label: "Top by market cap" },
+            { key: "bitunix", label: "Bitunix" },
           ].map((o) => (
             <button key={o.key} className={universe === o.key ? "active" : ""} onClick={() => setUniverse(o.key)}>
               {o.label}
             </button>
           ))}
         </div>
-        {universe === "coingecko" ? (
-          <select value={coinCount} onChange={(e) => setCoinCount(Number(e.target.value))}>
+        {universe === "coingecko" || universe === "bitunix" ? (
+          <select value={coinCount} aria-label="How many coins to scan" onChange={(e) => setCoinCount(Number(e.target.value))}>
             {COIN_COUNTS.map((n) => (
               <option key={n} value={n}>
-                Top {n}
+                Top {n}{universe === "bitunix" ? " by volume" : ""}
               </option>
             ))}
           </select>
@@ -506,17 +543,15 @@ export default function Dashboard() {
 
       {notice ? <div className="notice">⚠ {notice}</div> : null}
 
-      <div className="notice" style={{ marginBottom: 12 }}>
-        ⚠ <b>{STRAT.name}</b> — <b>Liquidity Sweep</b> → <b>Market Structure Shift (MSS)</b> → <b>Breaker Block</b> → <b>Fair Value Gap (FVG)</b>, exiting in two scales: <b>TP1 at 1:1</b> (bank half, de-risk) and <b>TP2 at 1:2</b> (the runner). That checklist alone decides whether a setup exists — ADX, Volatility and Volume are <i>filters only</i> and never gate detection (gating on them was hiding too many valid, profitable entries). Both pairings run the same strategy: <b>4H bias → 15m entry</b> and <b>1H bias → 5m entry</b> — pick a tab below. The <b>POI</b> (next unswept liquidity on the bias timeframe) is <i>marked, not targeted</i> — it shows where price is likely headed after TP2; its distance in R tells you how much room the runner has. <b>Breaker Block is never automated</b> — confirm it yourself on the chart before entering. Click a row's arrow to expand full details; click the symbol to open its chart in a new tab.
-      </div>
-
-      <div className="seg" style={{ marginBottom: 14 }}>
-        {Object.entries(PAIRING_TABS).map(([key, t]) => (
-          <button key={key} className={pairing === key ? "active" : ""} onClick={() => setPairing(key)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {SHOW_PAIRING_TABS ? (
+        <div className="seg" style={{ marginBottom: 14 }}>
+          {Object.entries(PAIRING_TABS).map(([key, t]) => (
+            <button key={key} className={pairing === key ? "active" : ""} onClick={() => setPairing(key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <PairingSection
         pairingKey={pairing}
@@ -532,12 +567,8 @@ export default function Dashboard() {
         anyFilterOn={anyFilterOn}
       />
 
-      <div className="foot">
-        <b>How to read it:</b> The table shows Asset, Price, Chg%, Bias, Entry, Stop, TP1, TP2 and POI — expand a row (▸) for the full breakdown: the annotated Position chart, the Sweep/MSS/Breaker/FVG checklist, the ADX / Volatility / Volume readings, bars since MSS, and Still catchable. <b>Why two targets:</b> taking the whole position to the next liquidity pool meant a reward-to-risk that swung with however far that pool happened to sit — often 4–5R, which reads well but rarely fills. Fixed <b>TP1 at 1:1</b> and <b>TP2 at 1:2</b> are far likelier to actually be reached; scale out at TP1 and the rest runs risk-free. The <b>POI</b> column is context, not an exit: it's the next unswept liquidity on the bias timeframe, with its distance in R — comfortably beyond TP2 means the runner has room, closer than TP2 means price may stall before it. <b>Grade</b> scores structural quality out of 11 — room to TP2 (3), trend strength (2), MSS participation (2), freshness (2), volatility (1), breaker candidate (1) — where <b>A+</b> is 8+, <b>A</b> is 5–7 and <b>B</b> is below 5. Timing is deliberately excluded, so a grade doesn't flicker as price wanders; expand a row to see exactly which factors earned or lost points. Use <b>🔔 Alerts</b> to have entry, TP1, TP2 and stop pushed to Discord as they happen. <b>Bias</b> is the higher-timeframe reversal direction (a sweep followed by a structure shift). The lower-timeframe Sweep/MSS/FVG columns are the entry-trigger checklist, detected independently. A row shows Entry/Stop/TP1/TP2 as soon as the lower-TF checklist completes and agrees with the higher-TF bias — that's the whole of <b>{STRAT.name}</b>. <b>ADX, Volatility and Volume are filters, not conditions:</b> leave them off to see every valid setup, or switch one on to narrow the list; the count of setups a filter is hiding is always shown next to them. Entry is the middle of the lower-TF Fair Value Gap, stop is the lower-TF sweep candle's wick extreme, target is the next unswept opposing swing on the <i>higher</i> TF (or a fixed 1:2 if none exists yet — shown in the expanded R:R). Breaker Block is always a candidate to check yourself, never auto-confirmed. <b>Still catchable?</b> compares the current price to entry/stop/target, not just bar count: <b>In zone</b> means price has pulled back to the gap — this is your window; <b>Running</b> means price never pulled back and is already headed to target — chasing it now is worse risk/reward than planned; <b>Target reached</b> or <b>Invalidated</b> mean the move has already played out one way or the other.
-        <br /><br />
-        <b>Strat#5 v1.0 vs v1.1:</b> v1.0 treats any confirmed Sweep→MSS on the bias timeframe as valid. <b>v1.1</b> additionally requires that sweep to have taken out a <b>strong low/high</b> — the single most extreme swing in the lookback window, not just a minor pivot along the way — filtering out reversals off insignificant liquidity. The lower-TF entry checklist (Sweep→MSS→FVG) is identical either way; v1.1 only tightens which higher-TF bias counts. Expand a row and check <b>Strong pivot</b> to see which one it was.
-        <br /><br />
-        <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
+      <div className="foot slim">
+        Educational signal simulation on live public data, not financial advice. Open <b>Menu</b> in the header for how to read the scanner.
       </div>
     </div>
   );
@@ -598,7 +629,7 @@ function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, hi
           <thead>
             <tr>
               <th style={{ width: 28 }}></th>
-              <th>Asset</th>
+              <th className="left">Asset</th>
               <th>Price</th>
               <th>Chg%</th>
               <th title="Structural quality of the setup — expand a row to see why">Grade</th>
@@ -687,7 +718,7 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
           <span className={`dot ${biasCls}`} />
           <a
             className="sym-link"
-            href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}`}
+            href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}${r.src ? `&src=${r.src}` : ""}`}
             title={`Open ${r.symbol} structure setup & chart`}
             target="_blank"
             rel="noreferrer"
@@ -695,7 +726,7 @@ function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onT
             <span className="sym">{r.symbol}</span>
             <span className="open-ico">↗</span>
           </a>
-          <span className="mk">{r.mkt === "crypto" ? "CRYPTO" : "FX"}</span>
+          <span className="mk">{r.src === "bitunix" ? "BITUNIX" : r.mkt === "crypto" ? "CRYPTO" : "FX"}</span>
           {playedOut ? <PlayedOutBadge window={r.entryWindow} /> : null}
         </td>
         <td className="num">{fmt(r.price, r.symbol)}</td>

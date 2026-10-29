@@ -2,3 +2,16 @@ name = "paldo"
 compatibility_date = "2024-07-29"
 compatibility_flags = ["nodejs_compat"]
 pages_build_output_dir = ".vercel/output/static"
+
+# Dedup ledger for /api/cron/scan (lib/cronLedger.js) — without it, the
+# scheduled scan re-alerts on the same setup every run instead of once.
+# Create it once with:
+#   npx wrangler kv namespace create ALERTS_KV
+# then replace the id below with the one it prints (also add it to the
+# Cloudflare Pages dashboard under Settings > Functions > KV namespace
+# bindings, since wrangler.toml bindings aren't picked up by Pages builds
+# triggered outside `wrangler pages deploy`).
+# Uncomment once you have a real id. A placeholder id makes Pages refuse the deploy.
+# [[kv_namespaces]]
+# binding = "ALERTS_KV"
+# id = "<your-namespace-id>"

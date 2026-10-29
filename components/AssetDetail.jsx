@@ -8,6 +8,7 @@ import { tvSymbol, TV_INTERVAL, tvUrl } from "@/lib/symbols";
 import TradingViewChart from "@/components/TradingViewChart";
 import PositionChart from "@/components/PositionChart";
 import { addJournalEntry, newEntryFromSetup } from "@/lib/journal";
+import { SHOW_PAIRING_TABS, SHOW_STRATEGY_VERSION_TOGGLE } from "@/lib/uiFlags";
 
 const STRAT = STRATEGIES.strat5;
 const GRADE_CLS = { "A+": "grade-aplus", A: "grade-a", B: "grade-b" };
@@ -104,7 +105,7 @@ function narrative(m, p) {
   return parts.join(" ");
 }
 
-export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
+export default function AssetDetail({ symbol, mkt, initialPairing = "A", src }) {
   const [pairing, setPairing] = useState(initialPairing); // "A": 4H->15m, "B": 1H->5m — set from the scanner tab that was clicked
   const [chartView, setChartView] = useState("lower"); // "lower" (entry) | "higher" (bias)
   const [bars, setBars] = useState(null); // { "4h", "1h", "15m", "5m" }
@@ -119,7 +120,11 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
     setState("loading");
     try {
       let b4h, b1h, b15m, b5m;
-      if (mkt === "crypto") {
+      if (mkt === "crypto" && src === "bitunix") {
+        // Bitunix-listed coins use Bitunix's own candles (many are not on Binance at all)
+        const { bars } = await jget(`/api/bitunix/klines?symbol=${encodeURIComponent(symbol)}`);
+        ({ "4h": b4h, "1h": b1h, "15m": b15m, "5m": b5m } = bars);
+      } else if (mkt === "crypto") {
         [{ bars: b4h }, { bars: b1h }, { bars: b15m }, { bars: b5m }] = await Promise.all([
           jget(`/api/klines?symbol=${symbol}&interval=4h&limit=300`),
           jget(`/api/klines?symbol=${symbol}&interval=1h&limit=300`),
@@ -146,7 +151,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
     } catch {
       setState("error");
     }
-  }, [symbol, mkt]);
+  }, [symbol, mkt, src]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -164,7 +169,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
   const p = PAIRINGS[pairing];
   const m = results ? results[pairing] : null;
   const idea = useMemo(() => narrative(m, p), [m, p]);
-  const tvSym = tvSymbol(mkt, symbol);
+  const tvSym = tvSymbol(mkt, symbol, src);
   const chartTf = chartView === "lower" ? p.lower : p.higher;
 
   const biasClass = m && m.biasHigh === "long" ? "long" : m && m.biasHigh === "short" ? "short" : "flat";
@@ -183,14 +188,17 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
     <div className="wrap">
       <div className="detail-head">
         <Link href="/" className="back">← Back to scanner</Link>
-        <div className="seg">
-          <button className={pairing === "A" ? "active" : ""} onClick={() => setPairing("A")}>4H → 15m</button>
-          <button className={pairing === "B" ? "active" : ""} onClick={() => setPairing("B")}>1H → 5m</button>
-        </div>
+        {SHOW_PAIRING_TABS ? (
+          <div className="seg">
+            <button className={pairing === "A" ? "active" : ""} onClick={() => setPairing("A")}>4H → 15m</button>
+            <button className={pairing === "B" ? "active" : ""} onClick={() => setPairing("B")}>1H → 5m</button>
+          </div>
+        ) : null}
         <div className="seg">
           <button className={chartView === "lower" ? "active" : ""} onClick={() => setChartView("lower")}>{p.lowerLabel} (entry)</button>
           <button className={chartView === "higher" ? "active" : ""} onClick={() => setChartView("higher")}>{p.higherLabel} (bias)</button>
         </div>
+        {SHOW_STRATEGY_VERSION_TOGGLE ? (
         <div className="seg" title="Strat#5 version — v1.1 additionally requires the higher-TF bias to have swept a strong (most extreme) low/high, not just any pivot">
           {Object.values(STRATEGY_VERSIONS).map((v) => (
             <button key={v.id} className={strategyVersion === v.id ? "active" : ""} onClick={() => setStrategyVersion(v.id)} title={v.short}>
@@ -198,13 +206,14 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
             </button>
           ))}
         </div>
+        ) : null}
         <Link href="/journal" className="back" style={{ marginLeft: "auto" }}>📓 Journal</Link>
         <span className="filter-title">{STRAT.name}</span>
         {m?.grade ? <span className={`grade ${GRADE_CLS[m.grade] || ""}`}>{m.grade}</span> : null}
       </div>
 
       <div className="detail-title">
-        <h1>{symbol} <span className="mk">{mkt === "crypto" ? "CRYPTO" : "FOREX/GOLD"}</span></h1>
+        <h1>{symbol} <span className="mk">{src === "bitunix" ? "BITUNIX" : mkt === "crypto" ? "CRYPTO" : "FOREX/GOLD"}</span></h1>
         {m && state === "ok" ? <span className={`pill ${biasClass}`}>{biasLabel}</span> : null}
         {m && state === "ok" && isPlayedOut(m) ? <PlayedOutBadge window={m.entryWindow} /> : null}
         {m && state === "ok" ? (
@@ -238,7 +247,7 @@ export default function AssetDetail({ symbol, mkt, initialPairing = "A" }) {
               </div>
             ) : null}
             <p className="idea-text" style={{ marginBottom: 6 }}>{idea}</p>
-            <a className="tv-ext" href={tvUrl(mkt, symbol, chartTf)} target="_blank" rel="noreferrer">
+            <a className="tv-ext" href={tvUrl(mkt, symbol, chartTf, src)} target="_blank" rel="noreferrer">
               Open full chart on TradingView ↗
             </a>
           </div>
