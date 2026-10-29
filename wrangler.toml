@@ -11,6 +11,7 @@ pages_build_output_dir = ".vercel/output/static"
 # Cloudflare Pages dashboard under Settings > Functions > KV namespace
 # bindings, since wrangler.toml bindings aren't picked up by Pages builds
 # triggered outside `wrangler pages deploy`).
-[[kv_namespaces]]
-binding = "ALERTS_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+# Uncomment once you have a real id. A placeholder id makes Pages refuse the deploy.
+# [[kv_namespaces]]
+# binding = "ALERTS_KV"
+# id = "<your-namespace-id>"
