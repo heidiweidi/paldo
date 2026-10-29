@@ -1,5 +1,6 @@
 import { auth, signOut } from "@/auth";
 import Dashboard from "@/components/Dashboard";
+import AppHeader from "@/components/AppHeader";
 
 export const runtime = "edge";
 
@@ -9,10 +10,8 @@ export default async function Home() {
 
   return (
     <>
-      <div className="topbar">
-        <div className="brand">
-          Trend &amp; Volatility Scanner <span>· Crypto + Forex</span>
-        </div>
+      <AppHeader active="scanner">
+        {user ? (
         <div className="user">
           {user?.image ? (
             <img src={user.image} alt="" className="avatar" referrerPolicy="no-referrer" />
@@ -27,7 +26,8 @@ export default async function Home() {
             <button className="signout" type="submit">Sign out</button>
           </form>
         </div>
-      </div>
+        ) : null}
+      </AppHeader>
       <Dashboard />
     </>
   );

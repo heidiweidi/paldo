@@ -1,8 +1,48 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CRYPTO, FOREX } from "@/lib/universe";
-import { analyze, to4h } from "@/lib/indicators";
+import { analyzeMTF, to4h, STRATEGIES, DEFAULT_FILTERS, STRATEGY_VERSIONS, DEFAULT_STRATEGY_VERSION } from "@/lib/indicators";
+import PositionChart from "@/components/PositionChart";
+import {
+  ALERT_EVENTS, DEFAULT_ALERT_SETTINGS, loadSettings, saveSettings,
+  collectAlerts, markSent, sendAlerts, buildEmbed, clearLedger,
+} from "@/lib/alerts";
+import { addJournalEntry, newEntryFromSetup } from "@/lib/journal";
+import { SHOW_PAIRING_TABS, SHOW_STRATEGY_VERSION_TOGGLE } from "@/lib/uiFlags";
+
+const STRAT = STRATEGIES.strat5;
+
+const withSrc = (row, src) => (row && src ? { ...row, src } : row);
+
+const GRADE_CLS = { "A+": "grade-aplus", A: "grade-a", B: "grade-b" };
+function GradeBadge({ grade, title }) {
+  if (!grade) return <span className="pill flat">—</span>;
+  return <span className={`grade ${GRADE_CLS[grade] || ""}`} title={title}>{grade}</span>;
+}
+
+// A setup that already hit TP2 or got invalidated has fully played out — it's
+// history, not something to act on. tp1_hit is deliberately excluded: the
+// runner is still open, so that's still a live position.
+const PLAYED_OUT_WINDOWS = new Set(["tp2_hit", "invalidated"]);
+const PLAYED_OUT_LABEL = { tp2_hit: "PLAYED OUT", invalidated: "INVALIDATED" };
+function isPlayedOut(r) {
+  return !!(r?.setupReady && PLAYED_OUT_WINDOWS.has(r.entryWindow));
+}
+function PlayedOutBadge({ window }) {
+  const cls = window === "invalidated" ? "short" : "flat";
+  return <span className={`pill ${cls} played-out-badge`}>{PLAYED_OUT_LABEL[window]}</span>;
+}
+
+// Runs `fn` over `items` with at most `limit` in flight. Used for Bitunix, which throttles bursts.
+async function pool(items, limit, fn) {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) await fn(items[next++]);
+    })
+  );
+}
 
 async function jget(url) {
   const r = await fetch(url, { cache: "no-store" });
@@ -17,49 +57,190 @@ function fmt(n, sym) {
   return n.toLocaleString(undefined, { minimumFractionDigits: dp > 4 ? 2 : dp, maximumFractionDigits: dp });
 }
 
+// Is this setup still catchable, or has price already moved on? See
+// entryWindowStatus() in lib/indicators.js for how each status is derived.
+const ENTRY_WINDOW = {
+  in_zone: { cls: "long", label: "✓ In zone" },
+  running: { cls: "warn", label: "Running — past entry" },
+  tp1_hit: { cls: "flat", label: "TP1 hit — runner only" },
+  tp2_hit: { cls: "flat", label: "TP2 reached" },
+  invalidated: { cls: "short", label: "✗ Invalidated" },
+};
+function EntryWindowPill({ status }) {
+  const w = ENTRY_WINDOW[status];
+  if (!w) return <span className="pill flat">—</span>;
+  return <span className={`pill ${w.cls}`}>{w.label}</span>;
+}
+
+const PAIRING_TABS = {
+  A: { label: "4H → 15m", title: "4H Bias → 15m Entry", higherLabel: "4H", lowerLabel: "15m" },
+  B: { label: "1H → 5m", title: "1H Bias → 5m Entry", higherLabel: "1H", lowerLabel: "5m" },
+};
+
+const COIN_COUNTS = [25, 50, 100, 150];
+
+// Optional screening filters, applied on top of a completed Strat#5 setup —
+// never a condition for the setup itself. All default to off so the scanner
+// surfaces every valid entry; switch one on to narrow the list.
+const FILTER_DEFS = [
+  {
+    key: "adx",
+    label: "ADX",
+    unit: "",
+    min: 0, max: 50, step: 1,
+    fmt: (v) => v.toFixed(0),
+    hint: "Trend strength on the bias timeframe. ~20+ is trending rather than choppy.",
+  },
+  {
+    key: "volatility",
+    label: "Volatility",
+    unit: "%",
+    min: 0, max: 5, step: 0.1,
+    fmt: (v) => v.toFixed(1),
+    hint: "ATR(14) as a % of price on the bias timeframe. Under ~0.5% is a sluggish market; over ~2% moves fast.",
+  },
+  {
+    key: "volume",
+    label: "Volume",
+    unit: "×",
+    min: 0, max: 5, step: 0.1,
+    fmt: (v) => v.toFixed(1),
+    hint: "Volume on the entry-timeframe MSS candle vs its own 20-bar average. Note: some forex feeds report no volume, so switching this on will hide those assets.",
+  },
+];
+
 export default function Dashboard() {
-  const [tf, setTf] = useState("4h");
   const [mkt, setMkt] = useState("all");
   const [onlySignals, setOnlySignals] = useState(true);
-  const [minAdx, setMinAdx] = useState(20);
-  const [sort, setSort] = useState({ k: "signal", asc: false });
-  const [rows, setRows] = useState([]);
+  const [pairing, setPairing] = useState("A"); // which timeframe pairing's table is shown
+  // Optional screening filters — see FILTER_DEFS. Off by default: a Strat#5
+  // setup is a Strat#5 setup regardless of these.
+  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const setFilter = (key, patch) =>
+    setFilters((f) => ({ ...f, [key]: { ...f[key], ...patch } }));
+  // Strat#5 version — v1.1 additionally requires the higher-TF bias to have
+  // swept a *strong* low/high (the most extreme swing in the lookback
+  // window), not just any qualifying pivot. Unlike ADX/Volatility/Volume,
+  // this is a real gate, not a filter — it changes what counts as ready.
+  const [strategyVersion, setStrategyVersion] = useState(DEFAULT_STRATEGY_VERSION);
+  // Crypto universe: the curated fixed list in lib/universe.js, the top N
+  // coins by market cap from CoinGecko, or the most traded USDT perpetuals on
+  // Bitunix (scanned with Bitunix's own candles). Forex/gold always comes from
+  // the fixed FOREX list.
+  const [universe, setUniverse] = useState("curated"); // "curated" | "coingecko" | "bitunix"
+  const [coinCount, setCoinCount] = useState(50);
+  // Raw bars per symbol — kept separate from analysis so changing a filter
+  // re-scores instantly against already-fetched data instead of re-hitting
+  // Binance/Yahoo (and risking rate limits) on every drag.
+  const [barsMap, setBarsMap] = useState([]); // [{ sym, mkt, b4h, b1h, b15m, b5m }]
+  const [lastUpdated, setLastUpdated] = useState(null);
   const [status, setStatus] = useState("Loading live data…");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // --- alerts ---
+  // Settings live in localStorage (loaded after mount so server and client
+  // render the same markup and React doesn't complain about a hydration
+  // mismatch).
+  const [alerts, setAlerts] = useState(DEFAULT_ALERT_SETTINGS);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [alertLog, setAlertLog] = useState([]); // most recent first, in-session
+  const [alertStatus, setAlertStatus] = useState("");
+  const [autoScan, setAutoScan] = useState(false);
+  useEffect(() => { setAlerts(loadSettings()); }, []);
+  const updateAlerts = (patch) => {
+    setAlerts((prev) => {
+      const next = { ...prev, ...patch, events: { ...prev.events, ...(patch.events || {}) } };
+      saveSettings(next);
+      return next;
+    });
+  };
+
+  // Strat#5 scanner — ICT/SMC liquidity-sweep checklist, run as two
+  // independent higher-timeframe/entry-timeframe pairings side by side:
+  //   Pairing A: 4H bias -> 15m entry
+  //   Pairing B: 1H bias -> 5m entry
+  // Each pairing sets its bias on the higher TF (Sweep -> MSS), then looks for
+  // its own Sweep -> MSS -> FVG on the entry TF. Target is the next unswept
+  // opposing swing (POI) on the higher TF, falling back to a fixed 1:2 R:R.
   const scan = useCallback(async () => {
     setLoading(true);
     setNotice("");
-    const interval = tf;
     const fails = [];
+    const noticeParts = [];
     let done = 0;
-    const total = CRYPTO.length + FOREX.length;
+
+    // Crypto universe: pull the top N coins by market cap from CoinGecko when
+    // that mode is selected, falling back to the curated list if the request
+    // fails (rate-limited, network hiccup, etc.) rather than scanning nothing.
+    let cryptoSymbols = CRYPTO;
+    let cryptoSrc = "binance";
+    if (universe === "bitunix") {
+      setStatus("Fetching Bitunix coins…");
+      try {
+        const { coins } = await jget(`/api/bitunix?limit=${coinCount}`);
+        if (Array.isArray(coins) && coins.length) {
+          cryptoSymbols = coins.map((c) => c.symbol);
+          cryptoSrc = "bitunix";
+        } else {
+          noticeParts.push("Bitunix returned no coins — used the curated list instead.");
+        }
+      } catch {
+        noticeParts.push("Couldn't reach Bitunix — used the curated list instead.");
+      }
+    } else if (universe === "coingecko") {
+      setStatus("Fetching top coins by market cap (CoinGecko)…");
+      try {
+        const { coins } = await jget(`/api/coingecko?limit=${coinCount}`);
+        if (Array.isArray(coins) && coins.length) {
+          cryptoSymbols = coins.map((c) => c.symbol);
+        } else {
+          noticeParts.push("CoinGecko returned no coins — used the curated list instead.");
+        }
+      } catch {
+        noticeParts.push("Couldn't reach CoinGecko — used the curated list instead.");
+      }
+    }
+
+    const total = cryptoSymbols.length + FOREX.length;
     const tick = () => setStatus(`Scanning ${done}/${total}…`);
     tick();
-    const out = [];
+    const collected = [];
 
-    await Promise.all(
-      CRYPTO.map(async (sym) => {
-        try {
-          const { bars } = await jget(`/api/klines?symbol=${sym}&interval=${interval}`);
-          const r = analyze(sym, "crypto", bars);
-          if (r) out.push(r);
-        } catch {
-          fails.push(sym);
-        } finally {
-          done++; tick();
+    const scanCrypto = async (sym) => {
+      try {
+        let b4h, b1h, b15m, b5m;
+        if (cryptoSrc === "bitunix") {
+          const { bars } = await jget(`/api/bitunix/klines?symbol=${encodeURIComponent(sym)}`);
+          ({ "4h": b4h, "1h": b1h, "15m": b15m, "5m": b5m } = bars);
+        } else {
+          [{ bars: b4h }, { bars: b1h }, { bars: b15m }, { bars: b5m }] = await Promise.all([
+            jget(`/api/klines?symbol=${sym}&interval=4h&limit=300`),
+            jget(`/api/klines?symbol=${sym}&interval=1h&limit=300`),
+            jget(`/api/klines?symbol=${sym}&interval=15m&limit=300`),
+            jget(`/api/klines?symbol=${sym}&interval=5m&limit=300`),
+          ]);
         }
-      })
-    );
+        collected.push({ sym, mkt: "crypto", src: cryptoSrc === "bitunix" ? "bitunix" : undefined, b4h, b1h, b15m, b5m });
+      } catch {
+        fails.push(sym);
+      } finally {
+        done++; tick();
+      }
+    };
+    if (cryptoSrc === "bitunix") await pool(cryptoSymbols, 2, scanCrypto);
+    else await Promise.all(cryptoSymbols.map(scanCrypto));
 
     await Promise.all(
       FOREX.map(async (o) => {
         try {
-          let { bars } = await jget(`/api/forex?symbol=${encodeURIComponent(o.y)}`);
-          if (interval === "4h") bars = to4h(bars);
-          const r = analyze(o.s, "forex", bars);
-          if (r) out.push(r);
+          const [{ bars: raw1h }, { bars: b15m }, { bars: b5m }] = await Promise.all([
+            jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&range=3mo`),
+            jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&interval=15m&range=10d`),
+            jget(`/api/forex?symbol=${encodeURIComponent(o.y)}&interval=5m&range=5d`),
+          ]);
+          const b4h = to4h(raw1h);
+          collected.push({ sym: o.s, mkt: "forex", b4h, b1h: raw1h, b15m, b5m });
         } catch {
           fails.push(o.s);
         } finally {
@@ -68,75 +249,123 @@ export default function Dashboard() {
       })
     );
 
-    // Volatility ranking within each market.
-    ["crypto", "forex"].forEach((m) => {
-      const g = out.filter((r) => r.mkt === m).map((r) => r.atrPct).sort((a, b) => a - b);
-      if (!g.length) return;
-      const q = (p) => g[Math.floor((g.length - 1) * p)];
-      out.filter((r) => r.mkt === m).forEach((r) => {
-        r.vol = r.atrPct >= q(0.66) ? "High" : r.atrPct >= q(0.33) ? "Med" : "Low";
-        r.volN = (r.atrPct - g[0]) / ((g[g.length - 1] - g[0]) || 1);
-      });
-    });
-    out.forEach((r) => { r.oppScore = r.signal !== 0 ? r.adx * (0.5 + (r.volN || 0)) : 0; });
-
-    setRows(out);
-    const sigCount = out.filter((r) => r.signal !== 0).length;
-    setStatus(`Updated ${new Date().toLocaleString()} · ${out.length} assets · ${sigCount} trending`);
+    setBarsMap(collected);
+    setLastUpdated(new Date());
     if (fails.length) {
-      setNotice(
-        `Couldn't load ${fails.length} symbol(s): ${fails.join(", ")}. The market source may have rate-limited momentarily — press Scan to retry.`
+      noticeParts.push(
+        `Couldn't load ${fails.length} symbol(s): ${fails.join(", ")}. The market source may have rate-limited momentarily${cryptoSrc === "bitunix" ? "" : ", or a CoinGecko top coin isn't listed as a USDT pair on Binance"} — press Scan to retry.`
       );
     }
+    if (noticeParts.length) setNotice(noticeParts.join(" "));
     setLoading(false);
-  }, [tf]);
+  }, [universe, coinCount]);
 
   useEffect(() => { scan(); }, [scan]);
 
-  const view = useMemo(() => {
-    let r = rows.slice();
-    if (mkt !== "all") r = r.filter((x) => x.mkt === mkt);
-    r.forEach((x) => (x._sig = x.signal !== 0 && x.adx >= minAdx));
-    if (onlySignals) r = r.filter((x) => x._sig);
-    const { k, asc } = sort;
-    r.sort((a, b) => {
-      let av, bv;
-      if (k === "signal") { av = a._sig ? a.oppScore : -1; bv = b._sig ? b.oppScore : -1; }
-      else if (k === "symbol") { return asc ? a.symbol.localeCompare(b.symbol) : b.symbol.localeCompare(a.symbol); }
-      else { av = a[k]; bv = b[k]; }
-      return asc ? av - bv : bv - av;
-    });
-    return r;
-  }, [rows, mkt, minAdx, onlySignals, sort]);
-
-  const cards = useMemo(() => {
-    const sigs = rows.filter((r) => r.signal !== 0 && r.adx >= minAdx && (mkt === "all" || r.mkt === mkt));
-    const longs = sigs.filter((r) => r.signal > 0).length;
-    const shorts = sigs.filter((r) => r.signal < 0).length;
-    const top = sigs.slice().sort((a, b) => b.oppScore - a.oppScore)[0];
-    const hot = rows.filter((r) => mkt === "all" || r.mkt === mkt).slice().sort((a, b) => b.atrPct - a.atrPct)[0];
-    return { count: sigs.length, longs, shorts, top, hot };
-  }, [rows, mkt, minAdx]);
-
-  const onSort = (k) =>
-    setSort((s) => (s.k === k ? { k, asc: !s.asc } : { k, asc: false }));
-
-  const th = (k, label) => (
-    <th
-      onClick={() => onSort(k)}
-      className={sort.k === k ? (sort.asc ? "sorted asc" : "sorted") : ""}
-    >
-      {label}
-    </th>
+  // Re-scored from barsMap whenever a filter changes — no re-fetch. Both
+  // pairings (4H→15m and 1H→5m) get the same strategy and the same filters.
+  const rowsA = useMemo(
+    () => barsMap.map((x) => withSrc(analyzeMTF(x.sym, x.mkt, x.b4h, x.b15m, filters, strategyVersion), x.src)).filter(Boolean),
+    [barsMap, filters, strategyVersion]
   );
+  const rowsB = useMemo(
+    () => barsMap.map((x) => withSrc(analyzeMTF(x.sym, x.mkt, x.b1h, x.b5m, filters, strategyVersion), x.src)).filter(Boolean),
+    [barsMap, filters, strategyVersion]
+  );
+  const readyCount = useMemo(
+    () =>
+      rowsA.filter((r) => r.setupReady && r.filtersPass).length +
+      rowsB.filter((r) => r.setupReady && r.filtersPass).length,
+    [rowsA, rowsB]
+  );
+  // How many valid Strat#5 setups the active filters are currently hiding —
+  // shown so a filter can never silently make the scanner look empty.
+  const hiddenByFilters = useMemo(
+    () =>
+      rowsA.filter((r) => r.setupReady && !r.filtersPass).length +
+      rowsB.filter((r) => r.setupReady && !r.filtersPass).length,
+    [rowsA, rowsB]
+  );
+  const anyFilterOn = filters.adx.on || filters.volatility.on || filters.volume.on;
+
+  // Fire alerts whenever fresh data lands. Both pairings are watched
+  // regardless of which tab is on screen — the whole point is to catch the
+  // ones you aren't looking at. Filters deliberately don't apply here: they're
+  // a way to browse the table, not a reason to go silent on a valid setup.
+  const scanSeq = useRef(0);
+  useEffect(() => {
+    if (!alerts.enabled || !barsMap.length) return;
+    let cancelled = false;
+    const seq = ++scanSeq.current;
+    (async () => {
+      const pending = [
+        ...collectAlerts(rowsA, "A", alerts),
+        ...collectAlerts(rowsB, "B", alerts),
+      ];
+      if (!pending.length || cancelled) return;
+      const site = typeof window !== "undefined" ? window.location.origin : "";
+      setAlertStatus(`Sending ${pending.length} alert(s)…`);
+      const delivered = await sendAlerts(pending, alerts, site);
+      if (cancelled || seq !== scanSeq.current) return;
+      markSent(delivered);
+      const deliveredSet = new Set(delivered);
+      const sent = pending.filter((p) => deliveredSet.has(p.key));
+      if (sent.length) {
+        setAlertLog((prev) => [
+          ...sent.map((a) => ({
+            id: a.key,
+            at: new Date(),
+            text: `${a.event.emoji} ${a.row.symbol} ${a.row.grade} · ${a.event.label} (${a.pairing === "A" ? "4H/15m" : "1H/5m"})`,
+          })),
+          ...prev,
+        ].slice(0, 30));
+      }
+      const failed = pending.length - sent.length;
+      setAlertStatus(failed ? `Sent ${sent.length}, ${failed} failed — will retry next scan` : `Sent ${sent.length} alert(s)`);
+    })();
+    return () => { cancelled = true; };
+  }, [rowsA, rowsB, alerts, barsMap.length]);
+
+  // Optional auto-rescan so the browser keeps watching without you clicking.
+  useEffect(() => {
+    if (!autoScan) return;
+    const id = setInterval(() => { if (!loading) scan(); }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [autoScan, loading, scan]);
+
+  const sendTestAlert = useCallback(async () => {
+    setAlertStatus("Sending test…");
+    const sample = rowsA.find((r) => r.setupReady) || rowsB.find((r) => r.setupReady);
+    try {
+      const site = typeof window !== "undefined" ? window.location.origin : "";
+      const embed = sample
+        ? buildEmbed({ event: ALERT_EVENTS.entry, row: sample, pairing: "A" }, site)
+        : { title: "🎯 Paldo test alert", description: "Alerts are wired up correctly. Real alerts will look like this, with entry, stop, TP1, TP2, POI and the reasons behind the grade.", color: 0x4c8dff };
+      const r = await fetch("/api/discord", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ webhook: alerts.webhook || undefined, embeds: [embed] }),
+      });
+      const data = await r.json().catch(() => ({}));
+      setAlertStatus(r.ok ? "Test alert sent — check your Discord channel." : `Failed: ${data.error || r.status}`);
+    } catch (e) {
+      setAlertStatus(`Failed: ${e.message || e}`);
+    }
+  }, [alerts.webhook, rowsA, rowsB]);
+  // Lookup so an expanded row can pull its own entry-timeframe candles for
+  // the position chart, without re-fetching — barsMap already has them.
+  const barsBySymbol = useMemo(() => {
+    const map = {};
+    for (const x of barsMap) map[x.sym] = x;
+    return map;
+  }, [barsMap]);
+  const statusLine = lastUpdated
+    ? `Updated ${lastUpdated.toLocaleString()} · ${barsMap.length} assets · ${readyCount} ready setups`
+    : status;
 
   return (
     <div className="wrap">
       <div className="controls">
-        <div className="seg">
-          <button className={tf === "1h" ? "active" : ""} onClick={() => setTf("1h")}>1H</button>
-          <button className={tf === "4h" ? "active" : ""} onClick={() => setTf("4h")}>4H</button>
-        </div>
         <div className="seg">
           {["all", "crypto", "forex"].map((m) => (
             <button key={m} className={mkt === m ? "active" : ""} onClick={() => setMkt(m)}>
@@ -144,46 +373,272 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
+        {SHOW_STRATEGY_VERSION_TOGGLE ? (
+        <div className="seg" title="Strat#5 version — v1.1 additionally requires the higher-TF bias to have swept a strong (most extreme) low/high, not just any pivot">
+          {Object.values(STRATEGY_VERSIONS).map((v) => (
+            <button key={v.id} className={strategyVersion === v.id ? "active" : ""} onClick={() => setStrategyVersion(v.id)} title={v.short}>
+              Strat#5 {v.label}
+            </button>
+          ))}
+        </div>
+        ) : null}
+        <div className="seg" title="Which coins to scan: a fixed curated list, the top N by market cap from CoinGecko, or the most traded USDT perpetuals on Bitunix (scanned with Bitunix's own candles)">
+          {[
+            { key: "curated", label: "Curated list" },
+            { key: "coingecko", label: "Top by market cap" },
+            { key: "bitunix", label: "Bitunix" },
+          ].map((o) => (
+            <button key={o.key} className={universe === o.key ? "active" : ""} onClick={() => setUniverse(o.key)}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        {universe === "coingecko" || universe === "bitunix" ? (
+          <select value={coinCount} aria-label="How many coins to scan" onChange={(e) => setCoinCount(Number(e.target.value))}>
+            {COIN_COUNTS.map((n) => (
+              <option key={n} value={n}>
+                Top {n}{universe === "bitunix" ? " by volume" : ""}
+              </option>
+            ))}
+          </select>
+        ) : null}
         <label className="ck">
           <input type="checkbox" checked={onlySignals} onChange={(e) => setOnlySignals(e.target.checked)} />
           Signals only
         </label>
-        <select value={minAdx} onChange={(e) => setMinAdx(+e.target.value)}>
-          <option value={0}>ADX ≥ 0</option>
-          <option value={20}>ADX ≥ 20</option>
-          <option value={25}>ADX ≥ 25</option>
-          <option value={30}>ADX ≥ 30</option>
-        </select>
         <button className="btn primary" onClick={scan} disabled={loading}>
           {loading ? "Scanning…" : "↻ Scan"}
         </button>
-        <div className="statusline">{status}</div>
+        <button
+          className={`btn${alerts.enabled ? " alert-on" : ""}`}
+          onClick={() => setAlertsOpen((v) => !v)}
+          title="Discord alerts for entry, TP1, TP2 and stop"
+        >
+          {alerts.enabled ? "🔔" : "🔕"} Alerts{alerts.enabled ? ` · ${alerts.minGrade}+` : ""}
+        </button>
+        <a className="btn" href="/journal" title="Your log of trades actually taken">📓 Journal</a>
+        <div className="statusline">{statusLine}</div>
+      </div>
+
+      {alertsOpen ? (
+        <div className="filterbar">
+          <div className="filterbar-head">
+            <span className="filter-title">Discord alerts</span>
+            <span className="filter-sub">
+              fires once per setup, per event — watches both timeframe pairings, ignores the table filters
+            </span>
+            <button className="btn" style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }} onClick={() => setAlertsOpen(false)}>
+              Close
+            </button>
+          </div>
+
+          <div className="filter-row" style={{ marginBottom: 10 }}>
+            <label className="ck">
+              <input type="checkbox" checked={alerts.enabled} onChange={(e) => updateAlerts({ enabled: e.target.checked })} />
+              Enable alerts
+            </label>
+            <label className="ck" title="Re-scan every 5 minutes so alerts keep firing while this tab stays open">
+              <input type="checkbox" checked={autoScan} onChange={(e) => setAutoScan(e.target.checked)} />
+              Auto-rescan every 5 min
+            </label>
+            <span className="filter-val" style={{ minWidth: 0 }}>Minimum grade</span>
+            <div className="seg">
+              {["A+", "A", "B"].map((g) => (
+                <button key={g} className={alerts.minGrade === g ? "active" : ""} onClick={() => updateAlerts({ minGrade: g })}>
+                  {g === "B" ? "All (B+)" : `${g} and up`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="filter-row" style={{ marginBottom: 10 }}>
+            {Object.values(ALERT_EVENTS).map((ev) => (
+              <label key={ev.key} className={`filter-chip${alerts.events[ev.key] ? " on" : ""}`} style={{ cursor: "pointer" }}>
+                <span className="ck" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!alerts.events[ev.key]}
+                    onChange={(e) => updateAlerts({ events: { [ev.key]: e.target.checked } })}
+                  />
+                  {ev.emoji} {ev.label}
+                </span>
+              </label>
+            ))}
+          </div>
+
+          <div className="filter-row">
+            <input
+              type="password"
+              className="webhook-input"
+              placeholder="Discord webhook URL (https://discord.com/api/webhooks/…)"
+              value={alerts.webhook}
+              onChange={(e) => updateAlerts({ webhook: e.target.value.trim() })}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <button className="btn" onClick={sendTestAlert}>Send test</button>
+            <button className="btn" onClick={() => { clearLedger(); setAlertLog([]); setAlertStatus("Alert history cleared — setups can alert again."); }}>
+              Reset history
+            </button>
+            {alertStatus ? <span className="filter-hidden">{alertStatus}</span> : null}
+          </div>
+
+          <div className="alert-help">
+            In Discord: <b>Server Settings → Integrations → Webhooks → New Webhook</b>, pick the channel, then <b>Copy Webhook URL</b>. It's stored in this browser only. Alternatively set <code>DISCORD_WEBHOOK_URL</code> in the Cloudflare Pages environment and leave this blank.
+            {" "}Alerts only fire while this tab is open — turn on auto-rescan to keep it working in the background.
+          </div>
+
+          {alertLog.length ? (
+            <div className="alert-log">
+              {alertLog.map((l) => (
+                <div key={l.id + l.at.getTime()} className="alert-log-row">
+                  <span className="alert-log-time">{l.at.toLocaleTimeString()}</span> {l.text}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="filterbar">
+        <div className="filterbar-head">
+          <span className="filter-title">Filters</span>
+          <span className="filter-sub">
+            optional — narrows the {STRAT.name} results, never changes what counts as a setup
+          </span>
+          {anyFilterOn ? (
+            <button className="btn" style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }} onClick={() => setFilters(DEFAULT_FILTERS)}>
+              Reset filters
+            </button>
+          ) : null}
+        </div>
+        <div className="filter-row">
+          {FILTER_DEFS.map((d) => {
+            const f = filters[d.key];
+            return (
+              <div key={d.key} className={`filter-chip${f.on ? " on" : ""}`} title={d.hint}>
+                <label className="ck">
+                  <input type="checkbox" checked={f.on} onChange={(e) => setFilter(d.key, { on: e.target.checked })} />
+                  {d.label}
+                </label>
+                <span className="filter-val">≥ {d.fmt(f.min)}{d.unit}</span>
+                <input
+                  type="range"
+                  min={d.min}
+                  max={d.max}
+                  step={d.step}
+                  value={f.min}
+                  disabled={!f.on}
+                  onChange={(e) => setFilter(d.key, { min: Number(e.target.value) })}
+                  style={{ width: 110 }}
+                />
+              </div>
+            );
+          })}
+          {anyFilterOn && hiddenByFilters > 0 ? (
+            <span className="filter-hidden">{hiddenByFilters} valid setup(s) hidden by filters</span>
+          ) : null}
+        </div>
       </div>
 
       {notice ? <div className="notice">⚠ {notice}</div> : null}
 
+      {SHOW_PAIRING_TABS ? (
+        <div className="seg" style={{ marginBottom: 14 }}>
+          {Object.entries(PAIRING_TABS).map(([key, t]) => (
+            <button key={key} className={pairing === key ? "active" : ""} onClick={() => setPairing(key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <PairingSection
+        pairingKey={pairing}
+        title={`${STRAT.name} · ${PAIRING_TABS[pairing].title}`}
+        rows={pairing === "A" ? rowsA : rowsB}
+        mkt={mkt}
+        onlySignals={onlySignals}
+        loading={loading}
+        higherLabel={PAIRING_TABS[pairing].higherLabel}
+        lowerLabel={PAIRING_TABS[pairing].lowerLabel}
+        barsBySymbol={barsBySymbol}
+        lowerKey={pairing === "A" ? "b15m" : "b5m"}
+        anyFilterOn={anyFilterOn}
+      />
+
+      <div className="foot slim">
+        Educational signal simulation on live public data, not financial advice. Open <b>Menu</b> in the header for how to read the scanner.
+      </div>
+    </div>
+  );
+}
+
+function PairingSection({ pairingKey, title, rows, mkt, onlySignals, loading, higherLabel, lowerLabel, barsBySymbol, lowerKey, anyFilterOn }) {
+  const [expanded, setExpanded] = useState(() => new Set());
+  const toggleRow = (sym) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(sym)) next.delete(sym); else next.add(sym);
+      return next;
+    });
+  };
+
+  const view = useMemo(() => {
+    let r = rows.slice();
+    if (mkt !== "all") r = r.filter((x) => x.mkt === mkt);
+    if (onlySignals) r = r.filter((x) => x.aligned);
+    // Filters only ever remove rows from view — they never changed whether the
+    // setup was detected in the first place.
+    r = r.filter((x) => x.filtersPass);
+    r.sort((a, b) => {
+      const av = (a.setupReady ? 2 : 0) + (a.aligned ? 1 : 0);
+      const bv = (b.setupReady ? 2 : 0) + (b.aligned ? 1 : 0);
+      if (bv !== av) return bv - av;
+      return (a.barsAgo ?? 999) - (b.barsAgo ?? 999);
+    });
+    return r;
+  }, [rows, mkt, onlySignals]);
+
+  const cards = useMemo(() => {
+    const scoped = rows.filter((r) => (mkt === "all" || r.mkt === mkt) && r.filtersPass);
+    const aligned = scoped.filter((r) => r.aligned);
+    const ready = scoped.filter((r) => r.setupReady);
+    return {
+      alignedLongs: aligned.filter((r) => r.biasLow === "long").length,
+      alignedShorts: aligned.filter((r) => r.biasLow === "short").length,
+      readyLongs: ready.filter((r) => r.biasLow === "long").length,
+      readyShorts: ready.filter((r) => r.biasLow === "short").length,
+      scanned: scoped.length,
+    };
+  }, [rows, mkt]);
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <h2 style={{ fontSize: 15, margin: "0 0 10px", color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".4px" }}>{title}</h2>
+
       <div className="cards">
-        <div className="card"><div className="k">Actionable setups</div><div className="v">{cards.count} <small>on {tf}</small></div></div>
-        <div className="card"><div className="k">Long / Short</div><div className="v"><span style={{ color: "var(--long)" }}>{cards.longs}</span> / <span style={{ color: "var(--short)" }}>{cards.shorts}</span></div></div>
-        <div className="card"><div className="k">Top opportunity</div><div className="v">{cards.top ? cards.top.symbol : "—"} <small>{cards.top ? `${cards.top.signal > 0 ? "long" : "short"} · ADX ${cards.top.adx.toFixed(0)}` : ""}</small></div></div>
-        <div className="card"><div className="k">Most volatile</div><div className="v">{cards.hot ? cards.hot.symbol : "—"} <small>{cards.hot ? `ATR ${cards.hot.atrPct.toFixed(2)}%` : ""}</small></div></div>
+        <div className="card"><div className="k">{higherLabel}/{lowerLabel} aligned</div><div className="v"><span style={{ color: "var(--long)" }}>{cards.alignedLongs}</span> / <span style={{ color: "var(--short)" }}>{cards.alignedShorts}</span> <small>bull/bear</small></div></div>
+        <div className="card"><div className="k">Ready {STRAT.name} setups</div><div className="v"><span style={{ color: "var(--long)" }}>{cards.readyLongs}</span> / <span style={{ color: "var(--short)" }}>{cards.readyShorts}</span> <small>bull/bear</small></div></div>
+        <div className="card"><div className="k">Bias / Entry timeframe</div><div className="v">{higherLabel} <small>/ {lowerLabel}</small></div></div>
+        <div className="card"><div className="k">Assets {anyFilterOn ? "passing filters" : "scanned"}</div><div className="v">{cards.scanned}{anyFilterOn ? <small> / {rows.length}</small> : null}</div></div>
       </div>
 
       <div className="tblwrap">
         <table>
           <thead>
             <tr>
-              {th("symbol", "Asset")}
-              {th("price", "Price")}
-              {th("chg", "Chg%")}
-              {th("signal", "Signal")}
-              {th("adx", "Trend (ADX)")}
-              {th("atrPct", "Volatility (ATR%)")}
-              {th("rsi", "RSI")}
-              {th("entry", "Entry")}
-              {th("stop", "Stop")}
-              {th("target", "Target")}
-              {th("rr", "R:R")}
+              <th style={{ width: 28 }}></th>
+              <th className="left">Asset</th>
+              <th>Price</th>
+              <th>Chg%</th>
+              <th title="Structural quality of the setup — expand a row to see why">Grade</th>
+              <th>{higherLabel} Bias</th>
+              <th>Entry</th>
+              <th>Stop</th>
+              <th title="1:1 — bank half and de-risk">TP1 1:1</th>
+              <th title="1:2 — the runner">TP2 1:2</th>
+              <th title="Next unswept liquidity on the bias timeframe — where price is likely headed next, not an exit">POI</th>
             </tr>
           </thead>
           <tbody>
@@ -191,56 +646,256 @@ export default function Dashboard() {
               <tr><td colSpan={11} className="empty">{loading ? "Loading…" : "No rows match the current filters."}</td></tr>
             ) : (
               view.map((r) => {
-                const volCls = r.vol === "High" ? "volHigh" : r.vol === "Low" ? "volLow" : "volMed";
-                const dotCls = r.signal > 0 ? "up" : r.signal < 0 ? "down" : "no";
+                const biasCls = r.biasHigh === "long" ? "up" : r.biasHigh === "short" ? "down" : "no";
+                const isOpen = expanded.has(r.symbol);
                 return (
-                  <tr key={r.symbol}>
-                    <td className="left">
-                      <span className={`dot ${dotCls}`} />
-                      <a className="sym-link" href={`/asset/${r.symbol}?mkt=${r.mkt}&tf=${tf}`} title={`Open ${r.symbol} trade idea & chart`}>
-                        <span className="sym">{r.symbol}</span>
-                        <span className="open-ico">↗</span>
-                      </a>
-                      <span className="mk">{r.mkt === "crypto" ? "CRYPTO" : "FX"}</span>
-                    </td>
-                    <td className="num">{fmt(r.price, r.symbol)}</td>
-                    <td className="num" style={{ color: r.chg >= 0 ? "var(--long)" : "var(--short)" }}>
-                      {r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%
-                    </td>
-                    <td>
-                      {r._sig ? (
-                        <span className={`pill ${r.signal > 0 ? "long" : "short"}`}>
-                          {r.signal > 0 ? "▲ LONG" : "▼ SHORT"}
-                        </span>
-                      ) : (
-                        <span className="pill flat">no trend</span>
-                      )}
-                    </td>
-                    <td className="num">
-                      {r.adx.toFixed(1)}
-                      <div className="bar"><i style={{ width: `${Math.min(100, r.adx)}%` }} /></div>
-                    </td>
-                    <td className={`num ${volCls}`}>{r.atrPct.toFixed(2)}% · {r.vol}</td>
-                    <td className="num" style={{ color: r.rsi > 70 ? "var(--short)" : r.rsi < 30 ? "var(--long)" : "var(--txt)" }}>
-                      {r.rsi.toFixed(0)}
-                    </td>
-                    <td className="num">{r._sig ? fmt(r.entry, r.symbol) : "—"}</td>
-                    <td className="num" style={{ color: "var(--short)" }}>{r._sig ? fmt(r.stop, r.symbol) : "—"}</td>
-                    <td className="num" style={{ color: "var(--long)" }}>{r._sig ? fmt(r.target, r.symbol) : "—"}</td>
-                    <td className="num rr">{r._sig ? `${r.rr.toFixed(1)}:1` : "—"}</td>
-                  </tr>
+                  <RowGroup
+                    key={r.symbol}
+                    r={r}
+                    pairingKey={pairingKey}
+                    higherLabel={higherLabel}
+                    lowerLabel={lowerLabel}
+                    biasCls={biasCls}
+                    isOpen={isOpen}
+                    onToggle={() => toggleRow(r.symbol)}
+                    lowerBars={barsBySymbol?.[r.symbol]?.[lowerKey] ?? null}
+                  />
                 );
               })
             )}
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
 
-      <div className="foot">
-        <b>How to read it:</b> A row is flagged <span className="pill long">LONG</span> or <span className="pill short">SHORT</span> only when the trend is aligned and strong — price on the trend side of EMA20/EMA50, +DI/−DI confirming, and ADX above your threshold. Volatility is ATR as a % of price, ranked within each market. Entry/Stop/Target are ATR-based (stop 1.5×ATR, target 3×ATR ⇒ 2:1 reward-to-risk).
-        <br /><br />
-        <b>Disclaimer:</b> Educational signal simulation on live public data — not financial advice. Verify every level on your own charts before acting. Crypto data via Binance, forex/gold via Yahoo Finance, proxied through this site's edge API.
+// A filter metric in the expanded row: always shows the live reading, and
+// marks pass/fail only when that filter is actually switched on.
+function FilterStat({ label, f, render }) {
+  const has = f && f.value != null;
+  return (
+    <div className="stat">
+      <div className="stat-k">
+        {label}
+        {f?.on ? <span className="filter-tag">filter ≥ {render(f.min)}</span> : null}
+      </div>
+      <div className={`stat-v ${f?.on ? (f.pass ? "long-txt" : "short-txt") : ""}`}>
+        {has ? render(f.value) : <span style={{ color: "var(--muted)" }}>no data</span>}
+        {f?.on ? <span style={{ marginLeft: 6 }}>{f.pass ? "✓" : "✗"}</span> : null}
       </div>
     </div>
+  );
+}
+
+function RowGroup({ r, pairingKey, higherLabel, lowerLabel, biasCls, isOpen, onToggle, lowerBars }) {
+  const ck = (v) => (v ? <span className="pill long">✓</span> : <span className="pill flat">—</span>);
+  const playedOut = isPlayedOut(r);
+  // Quick-add to the trade journal: snapshots this setup as it stands right
+  // now (see newEntryFromSetup in lib/journal.js) — the journal never
+  // re-reads live prices, so it's a record of what you actually saw and took.
+  const [logged, setLogged] = useState(false);
+  const logTrade = () => {
+    addJournalEntry(newEntryFromSetup(r, pairingKey));
+    setLogged(true);
+    setTimeout(() => setLogged(false), 2000);
+  };
+  return (
+    <>
+      <tr className={playedOut ? "row-played-out" : ""}>
+        <td>
+          <button
+            className="btn"
+            style={{ padding: "2px 7px", fontSize: 12, lineHeight: 1 }}
+            onClick={onToggle}
+            aria-label={isOpen ? "Collapse details" : "Expand details"}
+            title={isOpen ? "Collapse details" : "Expand details"}
+          >
+            {isOpen ? "▾" : "▸"}
+          </button>
+        </td>
+        <td className="left">
+          <span className={`dot ${biasCls}`} />
+          <a
+            className="sym-link"
+            href={`/asset/${r.symbol}?mkt=${r.mkt}&pairing=${pairingKey}${r.src ? `&src=${r.src}` : ""}`}
+            title={`Open ${r.symbol} structure setup & chart`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span className="sym">{r.symbol}</span>
+            <span className="open-ico">↗</span>
+          </a>
+          <span className="mk">{r.src === "bitunix" ? "BITUNIX" : r.mkt === "crypto" ? "CRYPTO" : "FX"}</span>
+          {playedOut ? <PlayedOutBadge window={r.entryWindow} /> : null}
+        </td>
+        <td className="num">{fmt(r.price, r.symbol)}</td>
+        <td className="num" style={{ color: r.chg >= 0 ? "var(--long)" : "var(--short)" }}>{r.chg >= 0 ? "+" : ""}{r.chg.toFixed(2)}%</td>
+        <td>
+          <GradeBadge
+            grade={r.grade}
+            title={r.quality ? `${r.quality.score}/${r.quality.max} — expand for the reasons` : ""}
+          />
+        </td>
+        <td>
+          {r.biasHigh === "long" ? <span className="pill long">▲ BULL</span>
+            : r.biasHigh === "short" ? <span className="pill short">▼ BEAR</span>
+            : <span className="pill flat">—</span>}
+        </td>
+        <td className="num">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</td>
+        <td className="num" style={{ color: "var(--short)" }}>{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</td>
+        <td className="num" style={{ color: "var(--long)" }}>{r.setupReady ? fmt(r.tp1, r.symbol) : "—"}</td>
+        <td className="num" style={{ color: "var(--long)", opacity: 0.75 }}>{r.setupReady ? fmt(r.tp2, r.symbol) : "—"}</td>
+        <td className="num poi-txt" title={r.poiR != null ? `${r.poiR.toFixed(1)}R from entry` : "no unswept pool ahead yet"}>
+          {r.setupReady && r.poi != null ? (
+            <>
+              {fmt(r.poi, r.symbol)} <small style={{ opacity: 0.8 }}>{r.poiR != null ? `${r.poiR.toFixed(1)}R` : ""}</small>
+            </>
+          ) : "—"}
+        </td>
+      </tr>
+      {isOpen ? (
+        <tr className="expand-row">
+          <td></td>
+          <td colSpan={10} style={{ whiteSpace: "normal", verticalAlign: "top" }}>
+            {playedOut ? (
+              <div className="notice played-out-banner">
+                {r.entryWindow === "tp2_hit"
+                  ? "⚑ This setup already ran its full course — price hit TP1 and TP2 before this scan. It's kept here for reference, not as something to act on. A new entry will only appear once a fresh Sweep → MSS → FVG chain forms."
+                  : "⚑ This setup was invalidated — price traded through the stop before entry could be caught. It's dead; don't chase it. A new entry needs a fresh Sweep → MSS → FVG chain."}
+              </div>
+            ) : null}
+            {r.quality ? (
+              <div className="why-card">
+                <div className="why-head">
+                  <GradeBadge grade={r.grade} />
+                  <span>setup — scored {r.quality.score} of {r.quality.max}</span>
+                </div>
+                <div className="why-list">
+                  {r.quality.reasons.map((why) => (
+                    <div key={why.key} className={`why-row ${why.tone}`}>
+                      <span className="why-mark">{why.tone === "strong" ? "✓" : why.tone === "weak" ? "✗" : "~"}</span>
+                      <span className="why-label">{why.label}</span>
+                      <span className="why-detail">{why.detail}</span>
+                      <span className="why-score">{why.score}/{why.max}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <div className="three-col" style={{ padding: "8px 0 14px" }}>
+              <div className="chart-panel" style={{ margin: 0 }}>
+                <div className="pos-head">
+                  <span className="lbl">Position ({lowerLabel}) — entry idea</span>
+                  {r.setupReady ? (
+                    <>
+                      <span className="pos-badge entry">Entry {fmt(r.entry, r.symbol)}</span>
+                      <span className="pos-badge stop">Stop {fmt(r.stop, r.symbol)}</span>
+                      <span className="pos-badge target">TP1 {fmt(r.tp1, r.symbol)}</span>
+                      <span className="pos-badge target">TP2 {fmt(r.tp2, r.symbol)}</span>
+                      {r.poi != null ? <span className="pos-badge poi">POI {fmt(r.poi, r.symbol)}</span> : null}
+                      <button
+                        className="btn"
+                        style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }}
+                        onClick={logTrade}
+                        title="Snapshot this setup into your trade journal"
+                      >
+                        {logged ? "✓ Logged" : "📓 Log trade"}
+                      </button>
+                    </>
+                  ) : (
+                    <small style={{ color: "var(--muted)" }}>checklist not complete yet</small>
+                  )}
+                </div>
+                {lowerBars ? (
+                  <PositionChart
+                    bars={lowerBars}
+                    entry={r.entry}
+                    stop={r.stop}
+                    tp1={r.tp1}
+                    tp2={r.tp2}
+                    poi={r.poi}
+                    sweepLevel={r.sweepLevel}
+                    mssLevel={r.mssLevel}
+                    fvgZone={r.fvgZone}
+                    breaker={r.breaker}
+                    height={240}
+                  />
+                ) : (
+                  <div style={{ padding: 30, textAlign: "center", color: "var(--muted)", fontSize: 13 }}>Loading chart…</div>
+                )}
+                <div className="chart-legend">
+                  <span><i className="sw" style={{ background: "var(--warn)" }} />Entry</span>
+                  <span><i className="sw" style={{ background: "var(--short)" }} />Stop</span>
+                  <span><i className="sw" style={{ background: "var(--long)" }} />TP1 / TP2</span>
+                  <span><i className="sw" style={{ background: "#c58cff" }} />POI (next liquidity)</span>
+                  <span><i className="sw" style={{ background: "var(--muted)" }} />Sweep</span>
+                  <span><i className="sw" style={{ background: "var(--accent)" }} />MSS</span>
+                  <span><i className="sw" style={{ background: "rgba(76,141,255,.4)" }} />FVG</span>
+                </div>
+              </div>
+
+              <div className="stats-card col-half">
+                <div className="stat">
+                  <div className="stat-k">{lowerLabel} / {higherLabel} Aligned</div>
+                  <div className="stat-v">
+                    {r.biasLow ? (r.aligned ? "✓ yes" : "✗ no") : "—"}
+                    {r.biasHigh && !r.aligned ? <small style={{ marginLeft: 6, color: "var(--muted)" }}>{lowerLabel} not aligned</small> : null}
+                  </div>
+                </div>
+                <div className="stat">
+                  <div className="stat-k">
+                    {higherLabel} Strong pivot
+                    {r.strategyVersion === "v1.1" ? <span className="filter-tag">v1.1 gate</span> : null}
+                  </div>
+                  <div className="stat-v" title="Was the swept low/high the most extreme swing in the lookback window, or just a minor pivot?">
+                    {ck(r.strongPivot)}
+                  </div>
+                </div>
+                <div className="stat"><div className="stat-k">{lowerLabel} Sweep</div><div className="stat-v">{ck(r.checklist?.sweep)}</div></div>
+                <div className="stat"><div className="stat-k">{lowerLabel} MSS</div><div className="stat-v">{ck(r.checklist?.mss)}</div></div>
+                <div className="stat">
+                  <div className="stat-k">{lowerLabel} Breaker (confirm yourself)</div>
+                  <div className="stat-v">{r.breaker ? <span className="pill flat" title="Candidate only — verify on chart">check candle {r.breaker.index}</span> : <span className="pill flat">—</span>}</div>
+                </div>
+                <div className="stat"><div className="stat-k">{lowerLabel} FVG</div><div className="stat-v">{ck(r.checklist?.fvg)}</div></div>
+                <FilterStat
+                  label={`ADX (${higherLabel})`}
+                  f={r.filters?.adx}
+                  render={(v) => v.toFixed(1)}
+                />
+                <FilterStat
+                  label={`Volatility (${higherLabel} ATR%)`}
+                  f={r.filters?.volatility}
+                  render={(v) => `${v.toFixed(2)}%`}
+                />
+                <FilterStat
+                  label={`Volume (${lowerLabel} MSS candle)`}
+                  f={r.filters?.volume}
+                  render={(v) => `${v.toFixed(1)}× avg`}
+                />
+              </div>
+
+              <div className="stats-card col-half">
+                <div className="stat"><div className="stat-k">Entry</div><div className="stat-v">{r.setupReady ? fmt(r.entry, r.symbol) : "—"}</div></div>
+                <div className="stat"><div className="stat-k">Stop</div><div className="stat-v short-txt">{r.setupReady ? fmt(r.stop, r.symbol) : "—"}</div></div>
+                <div className="stat"><div className="stat-k">TP1 (1:1)</div><div className="stat-v long-txt">{r.setupReady ? fmt(r.tp1, r.symbol) : "—"}</div></div>
+                <div className="stat"><div className="stat-k">TP2 (1:2)</div><div className="stat-v long-txt">{r.setupReady ? fmt(r.tp2, r.symbol) : "—"}</div></div>
+                <div className="stat">
+                  <div className="stat-k">POI — next liquidity</div>
+                  <div className="stat-v poi-txt">
+                    {r.setupReady && r.poi != null
+                      ? <>{fmt(r.poi, r.symbol)} <small style={{ color: "var(--muted)" }}>{r.poiR != null ? `· ${r.poiR.toFixed(1)}R ${r.poiBeyondTp2 ? "(beyond TP2 — room to run)" : "(before TP2)"}` : ""}</small></>
+                      : r.setupReady ? <small style={{ color: "var(--muted)" }}>none unswept ahead</small> : "—"}
+                  </div>
+                </div>
+                <div className="stat"><div className="stat-k">Bars since {lowerLabel} MSS</div><div className="stat-v">{r.barsAgo != null ? r.barsAgo : "—"}</div></div>
+                <div className="stat"><div className="stat-k">Still catchable?</div><div className="stat-v">{r.setupReady ? <EntryWindowPill status={r.entryWindow} /> : "—"}</div></div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
   );
 }
