@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { SYNCED_EVENT } from "@/lib/sync";
 import {
   loadJournal, addJournalEntry, updateJournalEntry, removeJournalEntry,
   newManualEntry, JOURNAL_STATUSES, realizedR, journalStats,
@@ -30,7 +31,7 @@ const BLANK_FORM = {
 // Quick-add buttons on the scanner/asset pages snapshot a live Strat#5 setup
 // in here (see newEntryFromSetup in lib/journal.js); this page also lets you
 // log anything taken off-plan and mark outcomes as they happen. Everything
-// lives in this browser's localStorage only — see lib/journal.js for why.
+// lives in this browser's localStorage and is copied to your wallet's KV record when sync is available — see lib/journal.js and lib/sync.js.
 export default function Journal() {
   const [entries, setEntries] = useState([]);
   const [ready, setReady] = useState(false); // load after mount to avoid a hydration mismatch
@@ -40,6 +41,10 @@ export default function Journal() {
   useEffect(() => {
     setEntries(loadJournal());
     setReady(true);
+    // The per-wallet sync updates localStorage after the page has loaded; re-read when it does.
+    const reload = () => setEntries(loadJournal());
+    window.addEventListener(SYNCED_EVENT, reload);
+    return () => window.removeEventListener(SYNCED_EVENT, reload);
   }, []);
 
   const stats = useMemo(() => journalStats(entries), [entries]);

@@ -1,35 +1,39 @@
 import { redirect } from "next/navigation";
-import { auth, signIn } from "@/auth";
+import { getAddress } from "viem";
+import { getSession } from "@/lib/session";
+import { authConfig, env } from "@/lib/sessionCore";
+import WalletLogin from "@/components/WalletLogin";
 
 export const runtime = "edge";
 
-export default async function LoginPage() {
-  const session = await auth();
-  if (session?.user) redirect("/");
+export default async function LoginPage({ searchParams }) {
+  const session = await getSession();
+  if (session?.address) redirect("/");
+
+  const cfg = authConfig();
+  const missing = [];
+  if (!cfg.secretOk) missing.push("SESSION_SECRET (a random string of 32+ characters)");
+  if (!cfg.allowlistOk) missing.push("WALLET_ALLOWLIST (comma-separated wallet addresses, or * to allow any wallet)");
 
   return (
     <div className="login-wrap">
       <div className="login-card">
-        <h1>Trend &amp; Volatility Scanner</h1>
+        <h1>Structure Setup Scanner</h1>
         <p className="login-sub">
-          Secured access. Sign in with your Google account to view live crypto and forex signals.
+          Connect your wallet and sign a short message to open the scanner. Signing is free: no transaction is sent and no funds move.
         </p>
-        <form
-          action={async () => {
-            "use server";
-            await signIn("google", { redirectTo: "/" });
-          }}
-        >
-          <button className="google-btn" type="submit">
-            <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
-              <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.9 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.1 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.3-.4-3.5z"/>
-              <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16.1 19 13 24 13c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.1 29.6 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
-              <path fill="#4CAF50" d="M24 44c5.2 0 10-2 13.6-5.2l-6.3-5.2C29.2 35.2 26.7 36 24 36c-5.3 0-9.7-3.1-11.3-7.9l-6.5 5C9.6 39.6 16.2 44 24 44z"/>
-              <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4 5.6l6.3 5.2C41.9 35.5 44 30.3 44 24c0-1.3-.1-2.3-.4-3.5z"/>
-            </svg>
-            Continue with Google
-          </button>
-        </form>
+        {missing.length ? (
+          <div className="wl-error" role="alert">
+            <div>Sign-in isn&apos;t set up on this server yet. The owner needs to set:</div>
+            <ul>{missing.map((m) => <li key={m}>{m}</li>)}</ul>
+          </div>
+        ) : null}
+        <WalletLogin
+          projectId={env("WALLETCONNECT_PROJECT_ID") || ""}
+          next={typeof searchParams?.next === "string" ? searchParams.next : ""}
+          reason={typeof searchParams?.reason === "string" ? searchParams.reason : ""}
+          disabled={missing.length > 0}
+        />
         <p className="login-foot">Educational signal tool — not financial advice.</p>
       </div>
     </div>
