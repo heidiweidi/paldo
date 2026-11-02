@@ -10,6 +10,7 @@ import {
 } from "@/lib/alerts";
 import { addJournalEntry, newEntryFromSetup } from "@/lib/journal";
 import { SHOW_PAIRING_TABS, SHOW_STRATEGY_VERSION_TOGGLE } from "@/lib/uiFlags";
+import { SYNCED_EVENT } from "@/lib/sync";
 
 const STRAT = STRATEGIES.strat5;
 
@@ -147,7 +148,13 @@ export default function Dashboard() {
   const [alertLog, setAlertLog] = useState([]); // most recent first, in-session
   const [alertStatus, setAlertStatus] = useState("");
   const [autoScan, setAutoScan] = useState(false);
-  useEffect(() => { setAlerts(loadSettings()); }, []);
+  useEffect(() => {
+    setAlerts(loadSettings());
+    // The per-wallet sync updates localStorage after the page has loaded; re-read when it does.
+    const reload = () => setAlerts(loadSettings());
+    window.addEventListener(SYNCED_EVENT, reload);
+    return () => window.removeEventListener(SYNCED_EVENT, reload);
+  }, []);
   const updateAlerts = (patch) => {
     setAlerts((prev) => {
       const next = { ...prev, ...patch, events: { ...prev.events, ...(patch.events || {}) } };

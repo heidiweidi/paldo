@@ -1,13 +1,13 @@
 # Trend & Volatility Scanner
 
 A Next.js (App Router) web app that scans **crypto + forex/gold** for high-volatility assets with clear
-trend continuation, secured behind **Google OAuth**, and built to deploy on **Cloudflare Pages**.
+trend continuation, secured behind **wallet sign-in** (MetaMask, Trust Wallet, any WalletConnect wallet), and built to deploy on **Cloudflare Pages**.
 
 - Live data proxied through the site's own **edge API** (`/api/klines`, `/api/forex`) — fixes forex CORS and hides upstream calls.
 - Indicators computed client-side: EMA20/50 alignment, ADX(14), ATR(14) volatility, RSI(14).
 - Each signal ships with an ATR-based **entry / stop (1.5×ATR) / target (3×ATR)** = fixed **2:1 reward-to-risk**.
 - Click any asset to open a **trade-idea page**: plain-English idea, the risk levels, and an embedded **TradingView chart**.
-- Auth.js v5 with JWT sessions (no database) so it runs on the Cloudflare edge runtime.
+- Sign-In with Ethereum (EIP-4361) with signed-cookie sessions (no database), so it runs on the Cloudflare edge runtime.
 
 > Educational signal simulation on live public data — **not financial advice**.
 
@@ -16,7 +16,7 @@ trend continuation, secured behind **Google OAuth**, and built to deploy on **Cl
 ## 0. Prerequisites
 
 - Node.js 18+ and npm
-- A Google account (for the OAuth client)
+- A wallet (MetaMask or Trust Wallet) and, for QR-code / mobile sign-in, a free WalletConnect project ID
 - A Cloudflare account (free plan is fine)
 
 Install dependencies:
@@ -28,37 +28,28 @@ npm install
 
 ---
 
-## 1. Create the Google OAuth client
+## 1. How wallet sign-in works
 
-1. Go to <https://console.cloud.google.com/> → create/select a project.
-2. **APIs & Services → OAuth consent screen**: choose **External**, fill app name + your email, save.
-   (You can leave it in "Testing" mode; add your email under **Test users** if so.)
-3. **APIs & Services → Credentials → Create Credentials → OAuth client ID → Web application.**
-4. Add **Authorized redirect URIs**:
-   - Local: `http://localhost:3000/api/auth/callback/google`
-   - Production: `https://YOUR-PROJECT.pages.dev/api/auth/callback/google`
-     (add your custom domain's callback too, if you use one)
-5. Copy the **Client ID** and **Client secret**.
+The login page asks your wallet to sign a short message (Sign-In with Ethereum, EIP-4361). Signing is free: no transaction is sent and no funds move. The server checks the signature, checks the wallet against `WALLET_ALLOWLIST`, and sets a signed httpOnly session cookie (7 days). A middleware gate then protects every page and API route. `/api/cron/scan` is exempt and keeps its own bearer secret (`CRON_SECRET`).
+
+- **Browser wallets** (MetaMask, Trust Wallet extension or in-app browser) connect directly.
+- **WalletConnect** adds a QR code / mobile deep link, and is how Trust Wallet connects on desktop. Create a free project at <https://dashboard.reown.com> and set `WALLETCONNECT_PROJECT_ID`. Without it only browser and in-app wallets work.
+- **Signing out:** the Disconnect button, or switching account in the wallet, ends the session. Removing an address from `WALLET_ALLOWLIST` revokes it on its next request.
+- **Per-wallet sync:** the trade journal and alert settings follow the wallet across devices, stored in the same KV namespace as the cron ledger (section 5). Without KV they stay in that browser only.
 
 ---
 
 ## 2. Configure environment variables
-
-Copy the example file and fill it in:
 
 ```bash
 cp .env.example .env.local
 ```
 
 ```
-AUTH_SECRET=<run: npx auth secret>
-AUTH_GOOGLE_ID=<your client id>
-AUTH_GOOGLE_SECRET=<your client secret>
-ALLOWED_EMAILS=            # empty = any Google account (current setting)
-AUTH_URL=http://localhost:3000
+SESSION_SECRET=<run: openssl rand -base64 33>     # 32+ characters; without it nobody can sign in
+WALLET_ALLOWLIST=0xYourWallet,0xAnotherWallet     # "*" = any wallet; empty = nobody (fail closed)
+WALLETCONNECT_PROJECT_ID=                         # optional, from dashboard.reown.com
 ```
-
-To later lock it down to only your account, set `ALLOWED_EMAILS=rpa@connectsys.tech` (comma-separate for more).
 
 ---
 
@@ -68,7 +59,9 @@ To later lock it down to only your account, set `ALLOWED_EMAILS=rpa@connectsys.t
 npm run dev
 ```
 
-Open <http://localhost:3000> → you'll be redirected to `/login` → sign in with Google → dashboard loads and scans live data.
+Open <http://localhost:3000> → you'll be redirected to `/login` → connect your wallet and sign → dashboard loads and scans live data.
+
+To check the whole sign-in and sync flow without a real wallet, run the dev server with `SESSION_SECRET` and `WALLET_ALLOWLIST` set to the address of a throwaway key, then `TEST_KEY=<that key> node scripts/auth-smoke.mjs http://localhost:3000`.
 
 To test the Cloudflare build locally (edge runtime, like production):
 
@@ -107,16 +100,15 @@ In **Settings → Environment variables**, add for Production (and Preview):
 
 | Name | Value |
 |------|-------|
-| `AUTH_SECRET` | your generated secret |
-| `AUTH_GOOGLE_ID` | Google client ID |
-| `AUTH_GOOGLE_SECRET` | Google client secret |
-| `AUTH_URL` | `https://YOUR-PROJECT.pages.dev` |
-| `ALLOWED_EMAILS` | empty, or your allowlist |
+| `SESSION_SECRET` | random string, 32+ characters (`openssl rand -base64 33`) |
+| `WALLET_ALLOWLIST` | comma-separated wallet addresses, or `*` for any wallet |
+| `WALLETCONNECT_PROJECT_ID` | optional, for QR / mobile wallets |
 
-Then update the Google OAuth **Authorized redirect URI** to match your final `pages.dev` (or custom) domain, e.g.
-`https://YOUR-PROJECT.pages.dev/api/auth/callback/google`.
+Nothing else to register: wallet sign-in has no callback URLs. Set the variables, then redeploy.
 
-Redeploy. Done.
+**Set `SESSION_SECRET` and `WALLET_ALLOWLIST` before deploying this version.** Until both exist, every page redirects to `/login` and nobody can sign in.
+
+
 
 ---
 
@@ -172,18 +164,18 @@ Bitunix throttles bursts ("request too frequently"), so the scan fetches two sym
 
 ```
 trend-scanner/
-├─ auth.js                     # Auth.js v5 config (Google, JWT, allowlist, route protection)
-├─ middleware.js               # Enforces auth on every route
+├─ middleware.js               # Wallet gate: session cookie required on every route
 ├─ next.config.mjs
 ├─ wrangler.toml               # Cloudflare Pages config + nodejs_compat
 ├─ app/
 │  ├─ layout.js
 │  ├─ globals.css
 │  ├─ page.js                  # Protected dashboard page (server) + top bar / sign-out
-│  ├─ login/page.js            # Google sign-in screen
+│  ├─ login/page.js            # Wallet sign-in screen
 │  ├─ asset/[symbol]/page.js   # Per-asset trade-idea + TradingView chart (edge)
 │  └─ api/
-│     ├─ auth/[...nextauth]/route.js   # Auth.js edge handlers
+│     ├─ auth/{nonce,verify,session,logout}/route.js  # Sign-In with Ethereum
+│     ├─ sync/route.js                 # Per-wallet journal + alert settings (KV)
 │     ├─ klines/route.js               # Binance proxy (edge)
 │     └─ forex/route.js                # Yahoo Finance proxy (edge)
 ├─ components/
@@ -201,7 +193,7 @@ trend-scanner/
 - **Assets:** edit `lib/universe.js`.
 - **Risk model:** change the `1.5 * atrV` / `3 * atrV` multipliers in `lib/indicators.js` (`analyze`).
 - **Signal strictness:** raise the ADX threshold in the UI, or tighten the alignment rules in `analyze`.
-- **Lock down access:** set `ALLOWED_EMAILS`.
+- **Lock down access:** edit `WALLET_ALLOWLIST`.
 
 ## Notes & limits
 

@@ -1,32 +1,20 @@
-import { auth, signOut } from "@/auth";
+import { getAddress } from "viem";
+import { getSession } from "@/lib/session";
 import Journal from "@/components/Journal";
 import AppHeader from "@/components/AppHeader";
+import WalletMenu from "@/components/WalletMenu";
+import WalletSync from "@/components/WalletSync";
 
 export const runtime = "edge";
 
 export default async function JournalPage() {
-  const session = await auth();
-  const user = session?.user;
+  const session = await getSession();
 
   return (
     <>
+      {session ? <WalletSync address={getAddress(session.address)} /> : null}
       <AppHeader active="journal">
-        {user ? (
-        <div className="user">
-          {user?.image ? (
-            <img src={user.image} alt="" className="avatar" referrerPolicy="no-referrer" />
-          ) : null}
-          <span className="uname">{user?.name || user?.email}</span>
-          <form
-            action={async () => {
-              "use server";
-              await signOut({ redirectTo: "/login" });
-            }}
-          >
-            <button className="signout" type="submit">Sign out</button>
-          </form>
-        </div>
-        ) : null}
+        {session ? <WalletMenu address={getAddress(session.address)} /> : null}
       </AppHeader>
       <Journal />
     </>

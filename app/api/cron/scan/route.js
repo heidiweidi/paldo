@@ -30,9 +30,8 @@ export async function POST(request) {
 
 async function handle(request) {
   // Fail closed: this endpoint fetches from Binance/Yahoo and can post to
-  // Discord, so unlike the rest of the site (whose auth gate is currently
-  // disabled — a separate, deliberate call) it always requires its own
-  // secret rather than defaulting to open.
+  // Discord, and the wallet gate deliberately skips it, so it always requires
+  // its own secret rather than defaulting to open.
   const secret = env("CRON_SECRET");
   if (!secret) {
     return json({ error: "CRON_SECRET is not configured on the server. Set it in your deployment's environment variables before scheduling this endpoint." }, 503);
@@ -97,7 +96,8 @@ async function handle(request) {
     try {
       const r = await fetch(`${siteUrl}/api/discord`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        // The site's wallet gate also covers /api/discord; the cron secret is how this call gets through.
+        headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
         body: JSON.stringify({ embeds: [buildEmbed(c, siteUrl)] }),
       });
       if (r.ok) {
